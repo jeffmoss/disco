@@ -27,7 +27,7 @@ pub type LogStore = store::LogStore;
 pub type StateMachineStore = store::StateMachineStore;
 
 pub mod protobuf {
-    tonic::include_proto!("openraftpb");
+    tonic::include_proto!("raftd");
 }
 
 pub mod raft_types;

@@ -1,5 +1,5 @@
 syntax = "proto3";
-package openraftpb;
+package raftd;
 
 // LeaderId represents the leader identifier in Raft
 message LeaderId {

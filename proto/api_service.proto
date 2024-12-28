@@ -1,5 +1,5 @@
 syntax = "proto3";
-package openraftpb;
+package raftd;
 
 // ApiService provides the key-value store API operations
 service ApiService {

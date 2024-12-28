@@ -8,13 +8,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         "proto/api_service.proto",
     ];
     tonic_build::configure()
-        .type_attribute("openraftpb.Node", "#[derive(Eq, serde::Serialize, serde::Deserialize)]")
+        .type_attribute("raftd.Node", "#[derive(Eq, serde::Serialize, serde::Deserialize)]")
         .type_attribute(
-            "openraftpb.SetRequest",
+            "raftd.SetRequest",
             "#[derive(Eq, serde::Serialize, serde::Deserialize)]",
         )
         .type_attribute(
-            "openraftpb.Response",
+            "raftd.Response",
             "#[derive(Eq, serde::Serialize, serde::Deserialize)]",
         )
         .compile_protos_with_config(config, &proto_files, &["proto"])?;
