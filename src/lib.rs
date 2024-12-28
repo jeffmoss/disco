@@ -7,9 +7,9 @@ use crate::raft_types::*;
 
 pub mod grpc;
 pub mod network;
-pub mod memstore;
-pub mod store;
 pub mod node;
+pub mod store;
+pub mod settings;
 #[cfg(test)]
 mod test;
 

@@ -18,30 +18,23 @@ pub type NodeId = u64;
 pub struct NodeService {
     node_id: NodeId,
     addr: String,
+    config: Arc<Config>,
 }
 
 impl NodeService {
   pub fn new(
     node_id: NodeId,
     addr: String,
+    config: Config,
   ) -> NodeService {
     NodeService {
       node_id,
       addr,
+      config: Arc::new(config)
     }
   }
 
   pub async fn start(&self) -> Result<(), Box<dyn std::error::Error>> {
-    let config = Arc::new(
-      Config {
-          heartbeat_interval: 500,
-          election_timeout_min: 1500,
-          election_timeout_max: 3000,
-          ..Default::default()
-      }
-      .validate()?,
-    );
-
     let dir = format!("{}.db", self.addr);
 
     let (log_store, state_machine_store) = new_storage(&dir).await;
@@ -54,7 +47,7 @@ impl NodeService {
     // Create a local raft instance.
     let raft = openraft::Raft::new(
       self.node_id,
-      config.clone(),
+      self.config.clone(),
       network,
       log_store,
       state_machine_store
