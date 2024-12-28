@@ -1,3 +1,5 @@
+use std::io::Cursor;
+
 use bincode::deserialize;
 use bincode::serialize;
 use futures::StreamExt;
@@ -14,7 +16,6 @@ use crate::protobuf::RaftRequestBytes;
 use crate::protobuf::SnapshotRequest;
 use crate::protobuf::VoteRequest;
 use crate::protobuf::VoteResponse;
-use crate::store::StateMachineData;
 use crate::raft_types::*;
 
 /// Internal gRPC service implementation for Raft protocol communications.
@@ -152,11 +153,8 @@ impl InternalService for InternalServiceImpl {
             }
         }
 
-        // Reconstruct StateMachineData from bytes
-        let snapshot_data = match StateMachineData::from_bytes(&snapshot_data_bytes) {
-            Ok(data) => data,
-            Err(e) => return Err(Status::internal(format!("Failed to reconstruct snapshot data: {}", e))),
-        };
+        // TODO: Make sure this works right
+        let snapshot_data = Cursor::new(snapshot_data_bytes);
 
         // Create snapshot from collected data
         let snapshot = Snapshot {

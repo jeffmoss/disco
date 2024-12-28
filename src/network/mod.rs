@@ -93,7 +93,7 @@ impl RaftNetworkV2<TypeConfig> for NetworkConnection {
             serialize(&(vote, snapshot.meta.clone())).map_err(|e| RPCError::Network(NetworkError::new(&e)))?;
 
         // Convert snapshot data to bytes
-        let snapshot_bytes = snapshot.snapshot.to_bytes();
+        let snapshot_bytes = snapshot.snapshot.into_inner();
 
         // Create a stream of snapshot requests
         let mut requests = Vec::new();

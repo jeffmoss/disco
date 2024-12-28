@@ -3,13 +3,13 @@
 use crate::protobuf::Node;
 use crate::protobuf::Response;
 use crate::protobuf::SetRequest;
-use crate::store::StateMachineData;
 use crate::raft_types::*;
 
 pub mod grpc;
 pub mod network;
 pub mod memstore;
 pub mod store;
+pub mod node;
 #[cfg(test)]
 mod test;
 
@@ -20,8 +20,7 @@ openraft::declare_raft_types!(
     pub TypeConfig:
         D = SetRequest,
         R = Response,
-        Node = Node,
-        SnapshotData = StateMachineData,
+        Node = Node
 );
 
 pub type LogStore = store::LogStore;
