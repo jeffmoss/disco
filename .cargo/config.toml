@@ -1,0 +1,9 @@
+[target.'cfg(feature = "static")']
+rustflags = [
+    "-C", "target-feature=+crt-static", 
+    "-C", "linker-plugin-lto", 
+    "-C", "linker=clang", 
+    "-C", "link-arg=-fuse-ld=lld",
+    "-C", "link-arg=-llz4",
+    "-C", "link-arg=-lzstd"
+]

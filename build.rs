@@ -1,7 +1,6 @@
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("cargo:rerun-if-changed=src/*");
-    let mut config = prost_build::Config::new();
-    config.protoc_arg("--experimental_allow_proto3_optional");
+    let config = prost_build::Config::new();
     let proto_files = [
         "proto/internal_service.proto",
         "proto/management_service.proto",

@@ -18,6 +18,7 @@ use openraft::RaftLogReader;
 use openraft::RaftSnapshotBuilder;
 use rocksdb::ColumnFamily;
 use rocksdb::ColumnFamilyDescriptor;
+// use rocksdb::DBCompressionType;
 use rocksdb::Direction;
 use rocksdb::Options;
 use rocksdb::DB;
@@ -435,6 +436,7 @@ pub(crate) async fn new_storage<P: AsRef<Path>>(db_path: P) -> (LogStore, StateM
     let mut db_opts = Options::default();
     db_opts.create_missing_column_families(true);
     db_opts.create_if_missing(true);
+    // db_opts.set_wal_compression_type(DBCompressionType::Lz4);
 
     let store = ColumnFamilyDescriptor::new("store", Options::default());
     let logs = ColumnFamilyDescriptor::new("logs", Options::default());

@@ -1,0 +1,3 @@
+[submodule "openraft"]
+	path = openraft
+	url = https://github.com/databendlabs/openraft.git
