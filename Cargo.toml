@@ -7,6 +7,10 @@ edition = "2021"
 name = "raftd"
 path = "src/bin/main.rs"
 
+[[bin]]
+name = "raft"
+path = "src/bin/client.rs"
+
 [features]
 static = []
 
@@ -26,6 +30,7 @@ tonic = "0.12.3"
 tracing = "0.1.41"
 tracing-subscriber = { version = "0.3.19", features = ["env-filter"] }
 clang-sys = { version = "1.8.1" }
+http = { version = "1" }
 
 [build-dependencies]
 prost-build = "0.13.4"

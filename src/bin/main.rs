@@ -17,29 +17,29 @@ pub struct Opt {
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    // Initialize tracing first, before any logging happens
-    tracing_subscriber::fmt()
-      .with_max_level(tracing::Level::INFO)
-      .with_file(true)
-      .with_line_number(true)
-      .init();
+  // Initialize tracing first, before any logging happens
+  tracing_subscriber::fmt()
+    .with_max_level(tracing::Level::INFO)
+    .with_file(true)
+    .with_line_number(true)
+    .init();
 
-    // Parse the parameters passed by arguments.
-    let options = Opt::parse();
+  // Parse the parameters passed by arguments.
+  let options = Opt::parse();
 
-    let settings = Settings::new()?;
+  let settings = Settings::new()?;
 
-    let config: Config = Config {
-      cluster_name:             settings.cluster_name,
-      election_timeout_min:     settings.election_timeout_min,
-      election_timeout_max:     settings.election_timeout_max,
-      heartbeat_interval:       settings.heartbeat_interval,
-      install_snapshot_timeout: settings.install_snapshot_timeout,
-      ..Default::default()
-    }.validate()?;
+  let config: Config = Config {
+    cluster_name:             settings.cluster_name,
+    election_timeout_min:     settings.election_timeout_min,
+    election_timeout_max:     settings.election_timeout_max,
+    heartbeat_interval:       settings.heartbeat_interval,
+    install_snapshot_timeout: settings.install_snapshot_timeout,
+    ..Default::default()
+  }.validate()?;
 
-    let service = NodeService::new(options.id, options.addr, config);
-    service.start().await?;
+  let service = NodeService::new(options.id, options.addr, config);
+  service.start().await?;
 
-    Ok(())
+  Ok(())
 }

@@ -10,6 +10,8 @@ pub mod network;
 pub mod node;
 pub mod store;
 pub mod settings;
+pub mod client;
+
 #[cfg(test)]
 mod test;
 
