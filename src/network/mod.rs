@@ -1,20 +1,17 @@
-use bincode::deserialize;
-use bincode::serialize;
 use openraft::error::NetworkError;
 use openraft::error::Unreachable;
 use openraft::network::v2::RaftNetworkV2;
 use openraft::network::RPCOption;
+use openraft::AnyError;
 use openraft::RaftNetworkFactory;
+use tonic::codegen::tokio_stream::wrappers::ReceiverStream;
 use tonic::transport::Channel;
 
-use crate::protobuf::internal_service_client::InternalServiceClient;
-use crate::protobuf::RaftRequestBytes;
-use crate::protobuf::SnapshotRequest;
+use crate::protobuf as pb;
+use crate::protobuf::raft_service_client::RaftServiceClient;
 use crate::protobuf::VoteRequest as PbVoteRequest;
 use crate::protobuf::VoteResponse as PbVoteResponse;
-use crate::raft_types::RPCError;
 use crate::raft_types::*;
-use crate::Node;
 use crate::NodeId;
 use crate::TypeConfig;
 
@@ -27,125 +24,150 @@ impl Network {}
 /// Implementation of the RaftNetworkFactory trait for creating new network connections.
 /// This factory creates gRPC client connections to other Raft nodes.
 impl RaftNetworkFactory<TypeConfig> for Network {
-    type Network = NetworkConnection;
+  type Network = NetworkConnection;
 
-    #[tracing::instrument(level = "debug", skip_all)]
-    async fn new_client(&mut self, _: NodeId, node: &Node) -> Self::Network {
-        NetworkConnection::new(node.clone())
-    }
+  #[tracing::instrument(level = "debug", skip_all)]
+  async fn new_client(&mut self, _: NodeId, node: &Node) -> Self::Network {
+    NetworkConnection::new(node.clone())
+  }
 }
 
 /// Represents an active network connection to a remote Raft node.
 /// Handles serialization and deserialization of Raft messages over gRPC.
 pub struct NetworkConnection {
-    target_node: Node,
+  target_node: pb::Node,
 }
 
 impl NetworkConnection {
-    /// Creates a new NetworkConnection with the provided gRPC client.
-    pub fn new(target_node: Node) -> Self {
-        NetworkConnection { target_node }
-    }
+  /// Creates a new NetworkConnection with the provided gRPC client.
+  pub fn new(target_node: Node) -> Self {
+    NetworkConnection { target_node }
+  }
 }
 
 /// Implementation of RaftNetwork trait for handling Raft protocol communications.
 #[allow(clippy::blocks_in_conditions)]
 impl RaftNetworkV2<TypeConfig> for NetworkConnection {
-    async fn append_entries(
-        &mut self,
-        req: AppendEntriesRequest,
-        _option: RPCOption,
-    ) -> Result<AppendEntriesResponse, RPCError> {
-        let server_addr = self.target_node.rpc_addr.clone();
-        let channel = match Channel::builder(format!("http://{}", server_addr).parse().unwrap()).connect().await {
-            Ok(channel) => channel,
-            Err(e) => {
-                return Err(openraft::error::RPCError::Unreachable(Unreachable::new(&e)));
-            }
-        };
-        let mut client = InternalServiceClient::new(channel);
+  async fn append_entries(
+    &mut self,
+    req: AppendEntriesRequest,
+    _option: RPCOption,
+  ) -> Result<AppendEntriesResponse, RPCError> {
+    let server_addr = self.target_node.rpc_addr.clone();
+    let channel = match Channel::builder(format!("http://{}", server_addr).parse().unwrap())
+      .connect()
+      .await
+    {
+      Ok(channel) => channel,
+      Err(e) => {
+        return Err(RPCError::Unreachable(Unreachable::new(&e)));
+      }
+    };
+    let mut client = RaftServiceClient::new(channel);
 
-        let value = serialize(&req).map_err(|e| RPCError::Network(NetworkError::new(&e)))?;
-        let request = RaftRequestBytes { value };
-        let response = client.append_entries(request).await.map_err(|e| RPCError::Network(NetworkError::new(&e)))?;
-        let message = response.into_inner();
-        let result = deserialize(&message.value).map_err(|e| RPCError::Network(NetworkError::new(&e)))?;
-        Ok(result)
+    let response = client
+      .append_entries(pb::AppendEntriesRequest::from(req))
+      .await
+      .map_err(|e| RPCError::Network(NetworkError::new(&e)))?;
+    let response = response.into_inner();
+    Ok(AppendEntriesResponse::from(response))
+  }
+
+  async fn full_snapshot(
+    &mut self,
+    vote: Vote,
+    snapshot: Snapshot,
+    _cancel: impl std::future::Future<Output = openraft::error::ReplicationClosed>
+      + openraft::OptionalSend
+      + 'static,
+    _option: RPCOption,
+  ) -> Result<SnapshotResponse, crate::raft_types::StreamingError> {
+    let server_addr = self.target_node.rpc_addr.clone();
+    let channel = match Channel::builder(format!("http://{}", server_addr).parse().unwrap())
+      .connect()
+      .await
+    {
+      Ok(channel) => channel,
+      Err(e) => {
+        return Err(RPCError::Unreachable(Unreachable::new(&e)).into());
+      }
+    };
+
+    let (tx, rx) = tokio::sync::mpsc::channel(1024);
+    let strm = ReceiverStream::new(rx);
+
+    let mut client = RaftServiceClient::new(channel);
+    let response = client
+      .snapshot(strm)
+      .await
+      .map_err(|e| NetworkError::new(&e))?;
+
+    // 1. Send meta chunk
+
+    let meta = &snapshot.meta;
+
+    let request = pb::SnapshotRequest {
+      payload: Some(pb::snapshot_request::Payload::Meta(
+        pb::SnapshotRequestMeta {
+          vote: Some(vote),
+          last_log_id: meta.last_log_id.map(|log_id| log_id.into()),
+          last_membership_log_id: meta.last_membership.log_id().map(|log_id| log_id.into()),
+          last_membership: Some(meta.last_membership.membership().clone().into()),
+          snapshot_id: meta.snapshot_id.to_string(),
+        },
+      )),
+    };
+
+    tx.send(request).await.map_err(|e| NetworkError::new(&e))?;
+
+    // 2. Send data chunks
+
+    let chunk_size = 1024 * 1024;
+    for chunk in snapshot.snapshot.chunks(chunk_size) {
+      let request = pb::SnapshotRequest {
+        payload: Some(pb::snapshot_request::Payload::Chunk(chunk.to_vec())),
+      };
+      tx.send(request).await.map_err(|e| NetworkError::new(&e))?;
     }
 
-    async fn full_snapshot(
-        &mut self,
-        vote: Vote,
-        snapshot: Snapshot,
-        _cancel: impl std::future::Future<Output = openraft::error::ReplicationClosed> + openraft::OptionalSend + 'static,
-        _option: RPCOption,
-    ) -> Result<SnapshotResponse, crate::raft_types::StreamingError> {
-        let server_addr = self.target_node.rpc_addr.clone();
-        let channel = match Channel::builder(format!("http://{}", server_addr).parse().unwrap()).connect().await {
-            Ok(channel) => channel,
-            Err(e) => {
-                return Err(openraft::error::RPCError::Unreachable(Unreachable::new(&e)).into());
-            }
-        };
-        let mut client = InternalServiceClient::new(channel);
-        // Serialize the vote and snapshot metadata
-        let rpc_meta =
-            serialize(&(vote, snapshot.meta.clone())).map_err(|e| RPCError::Network(NetworkError::new(&e)))?;
+    // 3. receive response
 
-        // Convert snapshot data to bytes
-        let snapshot_bytes = snapshot.snapshot.into_inner();
+    let message = response.into_inner();
 
-        // Create a stream of snapshot requests
-        let mut requests = Vec::new();
+    Ok(SnapshotResponse {
+      vote: message.vote.ok_or_else(|| {
+        NetworkError::new(&AnyError::error("Missing `vote` in snapshot response"))
+      })?,
+    })
+  }
 
-        // First request with metadata
-        requests.push(SnapshotRequest {
-            rpc_meta,
-            chunk: Vec::new(), // First chunk contains only metadata
-        });
+  async fn vote(&mut self, req: VoteRequest, _option: RPCOption) -> Result<VoteResponse, RPCError> {
+    let server_addr = self.target_node.rpc_addr.clone();
+    let channel = match Channel::builder(format!("http://{}", server_addr).parse().unwrap())
+      .connect()
+      .await
+    {
+      Ok(channel) => channel,
+      Err(e) => {
+        return Err(RPCError::Unreachable(Unreachable::new(&e)));
+      }
+    };
+    let mut client = RaftServiceClient::new(channel);
 
-        // Add snapshot data chunks
-        let chunk_size = 1024 * 1024; // 1 MB chunks, adjust as needed
-        for chunk in snapshot_bytes.chunks(chunk_size) {
-            requests.push(SnapshotRequest {
-                rpc_meta: Vec::new(), // Subsequent chunks have empty metadata
-                chunk: chunk.to_vec(),
-            });
-        }
+    // Convert the openraft VoteRequest to protobuf VoteRequest
+    let proto_vote_req: PbVoteRequest = req.into();
 
-        // Create a stream from the requests
-        let requests_stream = futures::stream::iter(requests);
+    // Create a tonic Request with the protobuf VoteRequest
+    let request = tonic::Request::new(proto_vote_req);
 
-        // Send the streaming snapshot request
-        let response = client.snapshot(requests_stream).await.map_err(|e| RPCError::Network(NetworkError::new(&e)))?;
-        let message = response.into_inner();
+    // Send the vote request
+    let response = client
+      .vote(request)
+      .await
+      .map_err(|e| RPCError::Network(NetworkError::new(&e)))?;
 
-        // Deserialize the response
-        let result = deserialize(&message.value).map_err(|e| RPCError::Network(NetworkError::new(&e)))?;
-        Ok(result)
-    }
-
-    async fn vote(&mut self, req: VoteRequest, _option: RPCOption) -> Result<VoteResponse, RPCError> {
-        let server_addr = self.target_node.rpc_addr.clone();
-        let channel = match Channel::builder(format!("http://{}", server_addr).parse().unwrap()).connect().await {
-            Ok(channel) => channel,
-            Err(e) => {
-                return Err(openraft::error::RPCError::Unreachable(Unreachable::new(&e)));
-            }
-        };
-        let mut client = InternalServiceClient::new(channel);
-
-        // Convert the openraft VoteRequest to protobuf VoteRequest
-        let proto_vote_req: PbVoteRequest = req.into();
-
-        // Create a tonic Request with the protobuf VoteRequest
-        let request = tonic::Request::new(proto_vote_req);
-
-        // Send the vote request
-        let response = client.vote(request).await.map_err(|e| RPCError::Network(NetworkError::new(&e)))?;
-
-        // Convert the response back to openraft VoteResponse
-        let proto_vote_resp: PbVoteResponse = response.into_inner();
-        Ok(proto_vote_resp.into())
-    }
+    // Convert the response back to openraft VoteResponse
+    let proto_vote_resp: PbVoteResponse = response.into_inner();
+    Ok(proto_vote_resp.into())
+  }
 }

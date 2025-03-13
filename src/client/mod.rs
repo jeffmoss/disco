@@ -1,6 +1,6 @@
 use std::time::Duration;
 
-use crate::protobuf::api_service_client::ApiServiceClient;
+use crate::protobuf::app_service_client::AppServiceClient;
 use crate::protobuf::{GetRequest, SetRequest};
 use tonic::{transport::Channel, Request, Status};
 
@@ -20,7 +20,7 @@ impl RaftClient {
 
   pub async fn get_value(&self, key: String) -> Result<Option<String>, Status> {
     // Create a client using the channel
-    let mut client = ApiServiceClient::new(self.channel.clone());
+    let mut client = AppServiceClient::new(self.channel.clone());
 
     // Create the GetRequest message
     let request = Request::new(GetRequest { key });
@@ -39,7 +39,7 @@ impl RaftClient {
     value: String,
   ) -> Result<Option<String>, tonic::Status> {
     // Create a client using the channel
-    let mut client = ApiServiceClient::new(self.channel.clone());
+    let mut client = AppServiceClient::new(self.channel.clone());
 
     // Create the SetRequest message
     let request = Request::new(SetRequest { key, value });

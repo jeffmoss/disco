@@ -44,10 +44,7 @@ rpc() {
     local method=$2
     local body="$3"
     local isApiService="$4"
-    local cmd="grpcurl -plaintext -proto ./proto/management_service.proto -d $body -import-path ./proto localhost:$port raftd.ManagementService/$method"
-    if [ "$isApiService" = "true" ]; then
-        cmd="grpcurl -plaintext -proto ./proto/api_service.proto -d $body -import-path ./proto localhost:$port raftd.ApiService/$method"
-    fi
+    cmd="grpcurl -plaintext -proto ./proto/app.proto -d $body -import-path ./proto localhost:$port raftd.AppService/$method"
 
     echo '---'" rpc($BASE_HOST:$port/$method, $body)"
 

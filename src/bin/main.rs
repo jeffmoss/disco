@@ -7,12 +7,12 @@ use raftd::settings::Settings;
 #[derive(Parser, Clone, Debug)]
 #[clap(author, version, about, long_about = None)]
 pub struct Opt {
-    #[clap(long)]
-    pub id: u64,
+  #[clap(long)]
+  pub id: u64,
 
-    #[clap(long)]
-    /// Network address to bind the server to (e.g., "127.0.0.1:50051")
-    pub addr: String,
+  #[clap(long)]
+  /// Network address to bind the server to (e.g., "127.0.0.1:50051")
+  pub addr: String,
 }
 
 #[tokio::main]
@@ -30,13 +30,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
   let settings = Settings::new()?;
 
   let config: Config = Config {
-    cluster_name:             settings.cluster_name,
-    election_timeout_min:     settings.election_timeout_min,
-    election_timeout_max:     settings.election_timeout_max,
-    heartbeat_interval:       settings.heartbeat_interval,
+    cluster_name: settings.cluster_name,
+    election_timeout_min: settings.election_timeout_min,
+    election_timeout_max: settings.election_timeout_max,
+    heartbeat_interval: settings.heartbeat_interval,
     install_snapshot_timeout: settings.install_snapshot_timeout,
     ..Default::default()
-  }.validate()?;
+  }
+  .validate()?;
 
   let service = NodeService::new(options.id, options.addr, config);
   service.start().await?;
