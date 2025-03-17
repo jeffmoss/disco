@@ -1,7 +1,7 @@
 use clap::Parser;
 use openraft::Config;
 
-use raftd::node::NodeService;
+use raftd::node::Node;
 use raftd::settings::Settings;
 
 #[derive(Parser, Clone, Debug)]
@@ -39,7 +39,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
   }
   .validate()?;
 
-  let service = NodeService::new(options.id, options.addr, config);
+  let service = Node::new(options.id, options.addr, config).await;
   service.start().await?;
 
   Ok(())

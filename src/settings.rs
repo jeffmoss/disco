@@ -22,10 +22,8 @@ impl Settings {
       // Load from a config file
       // Will look for config.yaml, config.json, config.toml, etc.
       .add_source(File::with_name("config").required(false))
-      
       // Override with environment variables prefixed with 'APP_'
       .add_source(Environment::with_prefix("CLUSTER"))
-
       .build()?;
 
     // Deserialize the configuration into our Settings struct

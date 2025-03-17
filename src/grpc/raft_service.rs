@@ -1,6 +1,5 @@
 use futures::StreamExt;
 use openraft::Snapshot;
-use std::sync::Arc;
 use tonic::Request;
 use tonic::Response;
 use tonic::Status;
@@ -26,16 +25,16 @@ use crate::raft_types::*;
 /// exposed to other trusted Raft cluster nodes, never to external clients.
 pub struct RaftServiceImpl {
   /// The local Raft node instance that this service operates on
-  raft_node: Arc<Raft>,
+  raft: Raft,
 }
 
 impl RaftServiceImpl {
   /// Creates a new instance of the internal service
   ///
   /// # Arguments
-  /// * `raft_node` - The Raft node instance this service will operate on
-  pub fn new(raft_node: Arc<Raft>) -> Self {
-    RaftServiceImpl { raft_node }
+  /// * `raft` - The Raft node instance this service will operate on
+  pub fn new(raft: Raft) -> Self {
+    RaftServiceImpl { raft }
   }
 }
 
@@ -57,7 +56,7 @@ impl RaftService for RaftServiceImpl {
     debug!("Processing vote request");
 
     let vote_resp = self
-      .raft_node
+      .raft
       .vote(request.into_inner().into())
       .await
       .map_err(|e| Status::internal(format!("Vote operation failed: {}", e)))?;
@@ -85,7 +84,7 @@ impl RaftService for RaftServiceImpl {
     debug!("Processing append entries request");
 
     let append_resp = self
-      .raft_node
+      .raft
       .append_entries(request.into_inner().into())
       .await
       .map_err(|e| Status::internal(format!("Append entries operation failed: {}", e)))?;
@@ -153,7 +152,7 @@ impl RaftService for RaftServiceImpl {
 
     // Install the full snapshot
     let snapshot_resp = self
-      .raft_node
+      .raft
       .install_full_snapshot(vote, snapshot)
       .await
       .map_err(|e| Status::internal(format!("Snapshot installation failed: {}", e)))?;

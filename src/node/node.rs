@@ -1,40 +1,34 @@
 use std::sync::Arc;
-use std::time::Duration;
-use tokio::time::sleep;
+use tokio::sync::mpsc::{channel, Receiver, Sender};
 use tracing::info;
 
-use openraft::{Config, Raft, ServerState};
+use openraft::Config;
 use tonic::transport::Server;
 
+use crate::controller::Controller;
 use crate::grpc::app_service::AppServiceImpl;
 use crate::grpc::raft_service::RaftServiceImpl;
 use crate::network::Network;
 use crate::protobuf::app_service_server::AppServiceServer;
 use crate::protobuf::raft_service_server::RaftServiceServer;
+use crate::raft_types::Raft;
 use crate::store::LogStore;
 use crate::store::StateMachineStore;
-use crate::TypeConfig;
+use crate::Command;
 
 use super::runtime;
 
 pub type NodeId = u64;
 
-pub struct NodeService {
-  node_id: NodeId,
-  addr: String,
-  config: Arc<Config>,
+#[derive(Clone)]
+pub struct Node {
+  inner: Arc<NodeInner>,
 }
 
-impl NodeService {
-  pub fn new(node_id: NodeId, addr: String, config: Config) -> NodeService {
-    NodeService {
-      node_id,
-      addr,
-      config: Arc::new(config),
-    }
-  }
-
-  pub async fn start(&self) -> Result<(), Box<dyn std::error::Error>> {
+impl Node {
+  pub async fn new(node_id: NodeId, addr: String, config: Config) -> Node {
+    let config = Arc::new(config);
+    let (controller_tx, controller_rx) = channel::<Command>(10);
     let log_store = LogStore::default();
     let state_machine_store = Arc::new(StateMachineStore::default());
 
@@ -44,8 +38,8 @@ impl NodeService {
 
     // Create a local raft instance.
     let raft = Raft::new(
-      self.node_id,
-      self.config.clone(),
+      node_id,
+      config.clone(),
       network,
       log_store,
       state_machine_store.clone(),
@@ -53,12 +47,62 @@ impl NodeService {
     .await
     .unwrap();
 
-    let raft_arc = Arc::new(raft);
-    self.subscribe_metrics(raft_arc.clone()).await;
+    Controller::new(controller_rx);
+
+    let node_inner = NodeInner::new(
+      controller_tx,
+      node_id,
+      addr,
+      raft,
+      state_machine_store,
+      config,
+    );
+
+    Node {
+      inner: Arc::new(node_inner),
+    }
+  }
+
+  /// Return the config of this Raft node.
+  pub async fn start(&self) -> Result<(), Box<dyn std::error::Error>> {
+    self.inner.start().await
+  }
+}
+
+pub struct NodeInner {
+  controller_tx: Sender<Command>,
+  node_id: NodeId,
+  addr: String,
+  raft: Raft,
+  state_machine_store: Arc<StateMachineStore>,
+  config: Arc<Config>,
+}
+
+impl NodeInner {
+  pub fn new(
+    controller_tx: Sender<Command>,
+    node_id: NodeId,
+    addr: String,
+    raft: Raft,
+    state_machine_store: Arc<StateMachineStore>,
+    config: Arc<Config>,
+  ) -> NodeInner {
+    NodeInner {
+      controller_tx,
+      node_id,
+      addr,
+      raft,
+      state_machine_store,
+      config,
+    }
+  }
+
+  pub async fn start(&self) -> Result<(), Box<dyn std::error::Error>> {
+    self.monitor_leader_election(self.raft.clone()).await;
 
     // Create the management service with raft instance
-    let internal_service = RaftServiceImpl::new(raft_arc.clone());
-    let api_service = AppServiceImpl::new(raft_arc.clone(), state_machine_store);
+    let internal_service = RaftServiceImpl::new(self.raft.clone());
+    let api_service = AppServiceImpl::new(self.raft.clone(), self.state_machine_store.clone());
 
     // Start server
     let server_future = Server::builder()
@@ -72,18 +116,22 @@ impl NodeService {
     Ok(())
   }
 
-  async fn subscribe_metrics(&self, raft: Arc<Raft<TypeConfig>>) {
-    let metrics = raft.metrics();
-    let node_id = self.node_id.clone();
+  async fn monitor_leader_election(&self, raft: Raft) {
+    let controller_tx = self.controller_tx.clone();
+    // raft.metrics() includes heartbeat notifications. server_metrics() is a subset that does not.
+    let mut metrics = raft.server_metrics();
 
     let fut = async move {
-      loop {
-        let changed = raft.wait(None).current_leader(node_id, "leader").await;
+      let mut leader_id: Option<NodeId> = None;
 
+      loop {
+        let changed = metrics.changed().await;
+
+        info!("Changed");
         if let Err(changed_err) = changed {
           // Shutting down.
           info!(
-            "{}; when:(watching metrics); quit subscribe_metrics() loop",
+            "{}; when:(watching metrics); quit monitor_leader_election() loop",
             changed_err
           );
           break;
@@ -91,25 +139,17 @@ impl NodeService {
 
         let mm = metrics.borrow().clone();
 
-        match mm.state {
-          ServerState::Leader => {
-            info!("Node {} is the leader", node_id);
-          }
-          ServerState::Follower => {
-            info!("Node {} is a follower", node_id);
-          }
-          ServerState::Candidate => {
-            info!("Node {} is a candidate", node_id);
-          }
-          ServerState::Shutdown => {
-            info!("Node {} is shutting down", node_id);
-          }
-          ServerState::Learner => {
-            info!("Node {} is a learner", node_id);
-          }
+        if leader_id == mm.current_leader {
+          continue;
         }
 
-        sleep(Duration::from_millis(5000)).await;
+        leader_id = mm.current_leader;
+
+        if leader_id == Some(mm.id) {
+          controller_tx.send(Command::StartController).await.unwrap();
+        } else {
+          controller_tx.send(Command::StopController).await.unwrap();
+        }
       }
     };
 

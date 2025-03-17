@@ -27,7 +27,7 @@ use crate::store::StateMachineStore;
 /// before processing them through the Raft consensus protocol.
 pub struct AppServiceImpl {
   /// The Raft node instance for consensus operations
-  raft_node: Arc<Raft>,
+  raft: Raft,
   /// The state machine store for direct reads
   /// The state machine's key-value store for direct reads
   state_machine_store: Arc<StateMachineStore>,
@@ -37,11 +37,11 @@ impl AppServiceImpl {
   /// Creates a new instance of the API service
   ///
   /// # Arguments
-  /// * `raft_node` - The Raft node instance this service will use
+  /// * `raft` - The Raft node instance this service will use
   /// * `state_machine_store` - The state machine store for reading data
-  pub fn new(raft_node: Arc<Raft>, state_machine_store: Arc<StateMachineStore>) -> Self {
+  pub fn new(raft: Raft, state_machine_store: Arc<StateMachineStore>) -> Self {
     AppServiceImpl {
-      raft_node,
+      raft,
       state_machine_store,
     }
   }
@@ -62,7 +62,7 @@ impl AppService for AppServiceImpl {
     debug!("Processing set request for key: {}", req.key.clone());
 
     let res = self
-      .raft_node
+      .raft
       .client_write(req.clone())
       .await
       .map_err(|e| Status::internal(format!("Failed to write to store: {}", e)))?;
@@ -127,7 +127,7 @@ impl AppService for AppServiceImpl {
 
     // Initialize the cluster
     let result = self
-      .raft_node
+      .raft
       .initialize(nodes_map)
       .await
       .map_err(|e| Status::internal(format!("Failed to initialize cluster: {}", e)))?;
@@ -162,7 +162,7 @@ impl AppService for AppServiceImpl {
     };
 
     let result = self
-      .raft_node
+      .raft
       .add_learner(node.node_id, raft_node, true)
       .await
       .map_err(|e| Status::internal(format!("Failed to add learner node: {}", e)))?;
@@ -191,7 +191,7 @@ impl AppService for AppServiceImpl {
     );
 
     let result = self
-      .raft_node
+      .raft
       .change_membership(req.members, req.retain)
       .await
       .map_err(|e| Status::internal(format!("Failed to change membership: {}", e)))?;
@@ -203,7 +203,7 @@ impl AppService for AppServiceImpl {
   /// Retrieves metrics about the Raft node
   async fn metrics(&self, _request: Request<()>) -> Result<Response<pb::MetricsResponse>, Status> {
     debug!("Collecting metrics");
-    let metrics = self.raft_node.metrics().borrow().clone();
+    let metrics = self.raft.metrics().borrow().clone();
     let resp = pb::MetricsResponse {
       membership: Some(metrics.membership_config.membership().clone().into()),
       other_metrics: metrics.to_string(),

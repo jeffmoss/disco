@@ -1,6 +1,6 @@
 debug: true
 cluster_name: "foo"
-election_timeout_min: 150
-election_timeout_max: 300
-heartbeat_interval: 50
+election_timeout_min: 1000
+election_timeout_max: 1500
+heartbeat_interval: 100
 install_snapshot_timeout: 120

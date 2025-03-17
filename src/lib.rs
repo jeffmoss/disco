@@ -1,6 +1,7 @@
 #![allow(clippy::uninlined_format_args)]
 
 pub mod client;
+pub mod controller;
 pub mod grpc;
 pub mod network;
 pub mod node;
@@ -18,6 +19,11 @@ mod pb_impl;
 mod test;
 
 use crate::protobuf as pb;
+
+pub enum Command {
+  StartController,
+  StopController,
+}
 
 openraft::declare_raft_types!(
     /// Declare the type configuration for example K/V store.
