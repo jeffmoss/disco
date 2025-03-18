@@ -1,63 +1,84 @@
-use crate::Command;
 use std::sync::Arc;
-use tokio::sync::Mutex;
+use tokio::sync::oneshot;
+use tokio::sync::{
+  mpsc::{channel, Receiver, Sender},
+  OwnedSemaphorePermit, Semaphore,
+};
+use tokio::task::JoinHandle;
 use tracing::info;
 
+use crate::action::{Actor, ActorResponse, BashCommand};
+
 pub struct Controller {
-  inner: Arc<Mutex<ControllerInner>>,
-  handle: tokio::task::JoinHandle<()>,
+  sender: Sender<Box<dyn Actor>>,
+  task_handle: JoinHandle<()>,
+  semaphore: Arc<Semaphore>,
 }
 
-/// The controller manages the entire cluster and starts and stops based on the node election status.
-/// The raft state manager is used to track the state for any necessary changes.
 impl Controller {
-  pub fn new(mut rx_api: tokio::sync::mpsc::Receiver<Command>) -> Controller {
-    // Create a new controller to move into the task
-    let inner = Arc::new(Mutex::new(ControllerInner::new()));
-    let inner_clone = inner.clone();
+  pub fn new(max_concurrent_tasks: usize) -> Controller {
+    let (sender, receiver) = channel::<Box<dyn Actor>>(10);
+    let semaphore = Arc::new(Semaphore::new(max_concurrent_tasks));
 
-    let handle = tokio::spawn(async move {
-      while let Some(command) = rx_api.recv().await {
-        match command {
-          Command::StartController => {
-            info!("Starting controller");
-            let mut ctrl = inner_clone.lock().await;
-            ctrl.start_controller().await;
-          }
-          Command::StopController => {
-            info!("Stopping controller");
-            let mut ctrl = inner_clone.lock().await;
-            ctrl.stop_controller().await;
-          }
-        }
-      }
-    });
+    let task_handle = {
+      let semaphore = semaphore.clone();
+      tokio::spawn(process_receiver(receiver, semaphore))
+    };
 
-    Controller { inner, handle }
-  }
-}
-
-// Inner controller implementation with instance methods
-struct ControllerInner {
-  running: bool,
-  // Other state
-}
-
-impl ControllerInner {
-  fn new() -> Self {
-    ControllerInner {
-      running: false,
-      // Initialize other state
+    Controller {
+      sender,
+      task_handle,
+      semaphore,
     }
   }
 
-  async fn start_controller(&mut self) {
-    self.running = true;
-    // Do actual controller start logic
+  pub async fn stop(self) -> Result<(), tokio::task::JoinError> {
+    drop(self.sender);
+    self.task_handle.await
   }
 
-  async fn stop_controller(&mut self) {
-    self.running = false;
-    // Do actual controller stop logic
+  pub async fn send_actor(
+    &self,
+    actor: Box<dyn Actor>,
+  ) -> Result<(), tokio::sync::mpsc::error::SendError<Box<dyn Actor>>> {
+    self.sender.send(actor).await
+  }
+
+  pub async fn run_command(
+    &self,
+    command: String,
+  ) -> Result<(), tokio::sync::mpsc::error::SendError<Box<dyn Actor>>> {
+    self.send_actor(BashCommand::new(command)).await
+  }
+}
+
+async fn process_receiver(mut receiver: Receiver<Box<dyn Actor>>, semaphore: Arc<Semaphore>) {
+  while let Some(actor) = receiver.recv().await {
+    let permit = semaphore.clone().acquire_owned().await.unwrap();
+    tokio::spawn(process_actor(actor, permit));
+  }
+}
+
+// Standalone function to run an actor
+pub async fn run_actor(actor: Box<dyn Actor>) -> Result<ActorResponse, oneshot::error::RecvError> {
+  let (tx, rx) = oneshot::channel();
+  actor.process(tx);
+  rx.await
+}
+
+pub async fn process_actor(actor: Box<dyn Actor>, _permit: OwnedSemaphorePermit) {
+  if let Ok(result) = run_actor(actor).await {
+    match &result {
+      ActorResponse::CommandResult(cmd) => {
+        info!(
+          "Command executed with status: {}, stdout: {}",
+          cmd.status, cmd.stdout
+        );
+      }
+      ActorResponse::Boolean(val) => {
+        info!("Boolean result: {}", val);
+      }
+      _ => (),
+    }
   }
 }

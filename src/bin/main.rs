@@ -40,7 +40,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
   .validate()?;
 
   let service = Node::new(options.id, options.addr, config).await;
-  service.start().await?;
+  service.run().await?;
 
   Ok(())
 }
