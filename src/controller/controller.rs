@@ -12,12 +12,11 @@ use crate::action::{Actor, ActorResponse, BashCommand};
 pub struct Controller {
   sender: Sender<Box<dyn Actor>>,
   task_handle: JoinHandle<()>,
-  semaphore: Arc<Semaphore>,
 }
 
 impl Controller {
   pub fn new(max_concurrent_tasks: usize) -> Controller {
-    let (sender, receiver) = channel::<Box<dyn Actor>>(10);
+    let (sender, receiver) = channel::<Box<dyn Actor>>(100);
     let semaphore = Arc::new(Semaphore::new(max_concurrent_tasks));
 
     let task_handle = {
@@ -28,7 +27,6 @@ impl Controller {
     Controller {
       sender,
       task_handle,
-      semaphore,
     }
   }
 
@@ -71,8 +69,8 @@ pub async fn process_actor(actor: Box<dyn Actor>, _permit: OwnedSemaphorePermit)
     match &result {
       ActorResponse::CommandResult(cmd) => {
         info!(
-          "Command executed with status: {}, stdout: {}",
-          cmd.status, cmd.stdout
+          "Command executed with status: {}, stdout: {}, stderr: {}",
+          cmd.status, cmd.stdout, cmd.stderr
         );
       }
       ActorResponse::Boolean(val) => {
