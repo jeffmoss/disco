@@ -8,6 +8,7 @@ pub struct Settings {
   pub election_timeout_max: u64,
   pub heartbeat_interval: u64,
   pub install_snapshot_timeout: u64,
+  pub external_commands_max: usize,
 }
 
 impl Settings {
@@ -19,6 +20,7 @@ impl Settings {
       .set_default("election_timeout_max", 300)?
       .set_default("heartbeat_interval", 50)?
       .set_default("install_snapshot_timeout", 120)?
+      .set_default("external_commands_max", 100)?
       // Load from a config file
       // Will look for config.yaml, config.json, config.toml, etc.
       .add_source(File::with_name("config").required(false))

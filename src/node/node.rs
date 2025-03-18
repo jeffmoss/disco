@@ -13,6 +13,7 @@ use crate::network::Network;
 use crate::protobuf::app_service_server::AppServiceServer;
 use crate::protobuf::raft_service_server::RaftServiceServer;
 use crate::raft_types::Raft;
+use crate::settings::Settings;
 use crate::store::LogStore;
 use crate::store::StateMachineStore;
 
@@ -29,25 +30,35 @@ pub struct NodeInner {
   addr: String,
   raft: Raft,
   state_machine_store: Arc<StateMachineStore>,
-  config: Arc<Config>,
+  settings: Settings,
 
   // controller is started and stopped based on raft leader status
   controller: Arc<Mutex<Option<Controller>>>,
 }
 
 impl Node {
-  pub async fn new(node_id: NodeId, addr: String, config: Config) -> Node {
-    let config = Arc::new(config);
+  pub async fn new(node_id: NodeId, addr: String, settings: Settings) -> Node {
     let log_store = LogStore::default();
     let state_machine_store = Arc::new(StateMachineStore::default());
 
     // Create the network layer
     let network = Network {};
 
+    let config: Config = Config {
+      cluster_name: settings.cluster_name.clone(),
+      election_timeout_min: settings.election_timeout_min,
+      election_timeout_max: settings.election_timeout_max,
+      heartbeat_interval: settings.heartbeat_interval,
+      install_snapshot_timeout: settings.install_snapshot_timeout,
+      ..Default::default()
+    }
+    .validate()
+    .unwrap(); // Handle the Result by unwrapping or use proper error handling
+
     // Create a local raft instance
     let raft = Raft::new(
       node_id,
-      config.clone(),
+      Arc::new(config),
       network,
       log_store,
       state_machine_store.clone(),
@@ -60,7 +71,7 @@ impl Node {
       addr,
       raft,
       state_machine_store,
-      config,
+      settings,
       controller: Arc::new(Mutex::new(None)),
     };
 
@@ -103,7 +114,7 @@ impl Node {
 
     // Get metrics directly
     let mut metrics = inner_arc.raft.server_metrics();
-
+    let max_concurrent_tasks = inner_arc.settings.external_commands_max.clone();
     let mut current_state: Option<ServerState> = None;
 
     loop {
@@ -129,13 +140,13 @@ impl Node {
           info!("Node {} is the leader", mm.id);
 
           // Only lock the controller when we need to modify it
-          NodeInner::start_controller(&inner_arc.controller).await;
+          NodeInner::start_controller(&inner_arc.controller, max_concurrent_tasks).await;
         }
         Some(ServerState::Follower) => {
           info!("Node {} is a follower", mm.id);
         }
         _ => {
-          info!("Node {} is a candidate", mm.id);
+          // info!("Node {} is a something", mm.id);
         }
       }
     }
@@ -143,10 +154,13 @@ impl Node {
 }
 
 impl NodeInner {
-  pub async fn start_controller(controller: &Arc<Mutex<Option<Controller>>>) {
+  pub async fn start_controller(
+    controller: &Arc<Mutex<Option<Controller>>>,
+    max_concurrent_tasks: usize,
+  ) {
     let mut controller_guard = controller.lock().await;
     if controller_guard.is_none() {
-      *controller_guard = Some(Controller::new(10));
+      *controller_guard = Some(Controller::new(max_concurrent_tasks));
       info!("Started controller");
 
       // We need to drop the guard to avoid deadlock when running the command

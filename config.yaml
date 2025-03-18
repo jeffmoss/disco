@@ -4,3 +4,4 @@ election_timeout_min: 1000
 election_timeout_max: 1500
 heartbeat_interval: 100
 install_snapshot_timeout: 120
+external_commands_max: 20

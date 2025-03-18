@@ -1,5 +1,4 @@
 use clap::Parser;
-use openraft::Config;
 
 use raftd::node::Node;
 use raftd::settings::Settings;
@@ -29,17 +28,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
   let settings = Settings::new()?;
 
-  let config: Config = Config {
-    cluster_name: settings.cluster_name,
-    election_timeout_min: settings.election_timeout_min,
-    election_timeout_max: settings.election_timeout_max,
-    heartbeat_interval: settings.heartbeat_interval,
-    install_snapshot_timeout: settings.install_snapshot_timeout,
-    ..Default::default()
-  }
-  .validate()?;
-
-  let service = Node::new(options.id, options.addr, config).await;
+  let service = Node::new(options.id, options.addr, settings).await;
   service.run().await?;
 
   Ok(())
