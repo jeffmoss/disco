@@ -1,3 +1,4 @@
+use super::init;
 use std::sync::Arc;
 use tokio::sync::oneshot;
 use tokio::sync::{
@@ -12,6 +13,7 @@ use crate::action::{Actor, ActorResponse, BashCommand};
 pub struct Controller {
   sender: Sender<Box<dyn Actor>>,
   task_handle: JoinHandle<()>,
+  init: init::Startup,
 }
 
 impl Controller {
@@ -27,6 +29,7 @@ impl Controller {
     Controller {
       sender,
       task_handle,
+      init: init::Startup::new("test-deployment/init.rhai").unwrap(),
     }
   }
 

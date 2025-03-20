@@ -1,11 +1,13 @@
 #![allow(clippy::uninlined_format_args)]
 
 pub mod action;
+pub mod builder;
 pub mod client;
 pub mod controller;
 pub mod grpc;
 pub mod network;
 pub mod node;
+pub mod provider;
 pub mod raft_types;
 pub mod settings;
 pub mod store;
