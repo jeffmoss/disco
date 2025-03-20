@@ -12,19 +12,21 @@ pub trait Provider: Send {
   /// # Returns
   ///
   /// A new key pair of type `Self::KeyPair`.
-  fn import_public_key(
+  #[allow(async_fn_in_trait)]
+  async fn import_public_key(
     &self,
     key_path: std::path::PathBuf,
     key_name: String,
-  ) -> impl Future<Output = Result<String, Box<dyn std::error::Error + Send + Sync>>>;
+  ) -> Result<String, Box<dyn std::error::Error + Send + Sync>>;
 
   /// Creates a new host.
   ///
   /// # Returns
   ///
   /// A new host of type `Self::Host`.
-  fn create_host(
+  #[allow(async_fn_in_trait)]
+  async fn create_host(
     &self,
     image_id: String,
-  ) -> impl Future<Output = Result<String, Box<dyn std::error::Error + Send + Sync>>>;
+  ) -> Result<String, Box<dyn std::error::Error + Send + Sync>>;
 }
