@@ -1,19 +1,19 @@
 use std::path::{Path, PathBuf};
 
-use disco_common::builder::cluster_module;
+use crate::builder::cluster_module;
 
 use rhai;
 use rhai::{exported_module, EvalAltResult, Position};
 use tracing::{info, warn};
 
-pub struct Startup {
+pub struct Engine {
   script_path: PathBuf,
-  engine: rhai::Engine,
+  rhai_engine: rhai::Engine,
 }
 
-impl Startup {
+impl Engine {
   pub fn new<S: Into<String>>(filename: S) -> Result<Self, Box<dyn std::error::Error>> {
-    let engine = Self::configure_engine();
+    let rhai_engine = Self::configure_rhai_engine();
 
     // Load the script file
     let (script_path, script_contents) = Self::load_script(&filename.into())?;
@@ -21,12 +21,12 @@ impl Startup {
     let expanded_filename = script_path.to_string_lossy();
 
     // Run the loaded script
-    if let Err(err) = engine
+    if let Err(err) = rhai_engine
       .compile(script_contents.clone())
       .map_err(|err| err.into())
       .and_then(|mut ast| {
         ast.set_source(expanded_filename.to_string());
-        engine.run_ast(&ast)
+        rhai_engine.run_ast(&ast)
       })
     {
       warn!("{:=<1$}", "", expanded_filename.len());
@@ -39,7 +39,7 @@ impl Startup {
 
     Ok(Self {
       script_path,
-      engine,
+      rhai_engine,
     })
   }
 
@@ -103,7 +103,7 @@ impl Startup {
     }
   }
 
-  fn configure_engine() -> rhai::Engine {
+  fn configure_rhai_engine() -> rhai::Engine {
     let mut engine = rhai::Engine::new();
     let module = exported_module!(cluster_module);
     // Register custom functions

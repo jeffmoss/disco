@@ -1,4 +1,3 @@
-use super::init;
 use std::sync::Arc;
 use tokio::sync::oneshot;
 use tokio::sync::{
@@ -9,11 +8,12 @@ use tokio::task::JoinHandle;
 use tracing::info;
 
 use disco_common::action::{Actor, ActorResponse, BashCommand};
+use disco_common::engine::Engine;
 
 pub struct Controller {
   sender: Sender<Box<dyn Actor>>,
   task_handle: JoinHandle<()>,
-  init: init::Startup,
+  engine: Engine,
 }
 
 impl Controller {
@@ -29,7 +29,7 @@ impl Controller {
     Controller {
       sender,
       task_handle,
-      init: init::Startup::new("test-deployment/init.rhai").unwrap(),
+      engine: Engine::new("test-deployment/init.rhai").unwrap(),
     }
   }
 

@@ -1062,7 +1062,6 @@ dependencies = [
  "openraft",
  "prost",
  "prost-build",
- "rhai",
  "serde",
  "tokio",
  "tonic",
