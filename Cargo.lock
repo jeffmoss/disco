@@ -1032,17 +1032,8 @@ dependencies = [
 name = "disco-client"
 version = "0.1.0"
 dependencies = [
- "aws-config",
- "aws-sdk-ec2",
  "clap",
- "config",
  "disco-daemon",
- "futures",
- "http 1.3.1",
- "openraft",
- "prost",
- "rhai",
- "serde",
  "tokio",
  "tonic",
  "tracing",
@@ -1055,31 +1046,19 @@ version = "0.1.0"
 dependencies = [
  "aws-config",
  "aws-sdk-ec2",
- "clap",
- "config",
- "futures",
- "http 1.3.1",
- "openraft",
- "prost",
  "rhai",
- "serde",
  "tokio",
- "tonic",
  "tracing",
- "tracing-subscriber",
 ]
 
 [[package]]
 name = "disco-daemon"
 version = "0.1.0"
 dependencies = [
- "aws-config",
- "aws-sdk-ec2",
  "clap",
  "config",
  "disco-common",
  "futures",
- "http 1.3.1",
  "openraft",
  "prost",
  "prost-build",

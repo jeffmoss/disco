@@ -4,7 +4,7 @@ Disco is an opinionated, lightweight, distributed cloud orchestrator written in 
 
 The disco daemon employs the raft protocol for fault tolerance, ensuring that a single cluster controller is operational on one of the control plane nodes. Presently, the control plane consists of every node in the cluster.
 
-Cluster configuration is scripted using Rhai, an embedded scripting language for Rust. This is a departure from other systems that make heavy use of configuration files. Each DCO configuration
+Cluster configuration is scripted using Rhai, an embedded scripting language for Rust. This is a departure from other systems that make heavy use of configuration files.
 
 ## Cluster setup
 
