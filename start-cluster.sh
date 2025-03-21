@@ -7,7 +7,7 @@ BUILD_TYPE=debug
 NODE_COUNT=3
 BASE_HOST=127.0.0.1
 BASE_PORT=5051
-EXECUTABLE="./target/$BUILD_TYPE/raftd"
+EXECUTABLE="./target/$BUILD_TYPE/discod"
 
 # Check if executable exists and build if needed
 if [ ! -f "$EXECUTABLE" ]; then
@@ -31,7 +31,7 @@ fi
 cleanup() {
     echo -e "\nCtrl+C detected. Cleaning up..."
     echo "Killing all nodes..."
-    pkill -f "raftd"
+    pkill -f "discod"
     echo "All servers have been terminated."
     exit 0
 }
@@ -44,7 +44,7 @@ rpc() {
     local method=$2
     local body="$3"
     local isApiService="$4"
-    cmd="grpcurl -plaintext -proto ./proto/app.proto -d $body -import-path ./proto localhost:$port raftd.AppService/$method"
+    cmd="grpcurl -plaintext -proto ./disco-daemon/proto/app.proto -d $body -import-path ./disco-daemon/proto localhost:$port disco.AppService/$method"
 
     echo '---'" rpc($BASE_HOST:$port/$method, $body)"
 
@@ -65,12 +65,12 @@ rpc() {
 export RUST_LOG=trace
 export RUST_BACKTRACE=full
 
-echo "Killing all running raftd instances..."
+echo "Killing all running discod instances..."
 
-# Kill all running instances of raftd
-pkill -f "raftd" || true
+# Kill all running instances of discod
+pkill -f "discod" || true
 
-echo "Starting $NODE_COUNT uninitialized raftd servers..."
+echo "Starting $NODE_COUNT uninitialized discod servers..."
 
 # Start the servers in a loop
 i=1

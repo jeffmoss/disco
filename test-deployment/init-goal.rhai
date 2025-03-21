@@ -1,21 +1,14 @@
-// Description: A simple deployment script that sets up a Raft cluster and deploys a web app
+// Description: A simple deployment script that sets up a Disco cluster and deploys a web app
 
-// This is a Rhai script with the ability to fetch data from the cloud needed to configure the
-// script, such as secret keys.
-
-// Basic cluster initialization to set up 3 EC2 instances and start the raftd service
-// Each node will have the given key
+// This is a Rhai script. Learn more about it at https://rhai.rs/book/
 
 let provider = aws("us-west-2") // For now, everything has a default region
-let repository = github("jeffmoss/raftd")
+let repository = github("jeffmoss/disco")
 
-let key_pair = provider.import_key_pair("raftd-key")
-  .public_key(
-    // installed to each VM's user account by cloud-init
-    local_file("./id_ed25519.pub")
-  )
+let key_pair = provider.import_key_pair("disco-key")
+  .public_key(local_file("./id_ed25519.pub"))
 
-let cluster = provider.cluster("raftd-primary")
+let cluster = provider.cluster("disco-primary")
   .image("ami-06db875b10d8a3ef8")
   .public_key(key_pair)
   .user("ubuntu") // The image default user
@@ -37,31 +30,30 @@ fn configure_app(deployment, environment) {
 }
 
 // Flexible deployment that simply clones the given git repo, builds and starts the HTTP service
-let production = configure_app(cluster.deployment("web-app"))
-  .environment("NODE_ENV", "production")
-  .log_drain(provider.s3_log_drain)
+let production = configure_app(cluster.deployment("web-app"), "production")
+  .log_drain(provider.s3_log_bucket_drain("disco-web-app-logs"))
 
 // With no log_drain defined in the testing environment, clients can stream logs
-let testing = configure_app(cluster.deployment("web-app-testing"))
-  .environment("NODE_ENV", "testing")
+let testing = configure_app(cluster.deployment("web-app-testing"), "testing")
 
 // CD pipeline to the testing environment using github actions
 repository.branch("master").on("commit", |hash| testing.deploy(hash) )
-// This script can access a raft key-value and that can also be used as a watch, allowing the client
-// to trigger a production deployment manually.
-raft.key("deployed-commit").on("change", |hash| production.deploy(hash) )
 
-// TBD: containerized deployment with container registries
-// TBD: TLS offloading
-// TBD: autoscaling and metrics
-// TBD: monitoring and alerting
-// TBD: rollout strategies
+// This script can access Disco's key-value store to trigger a production deployment manually.
+disco.key("deployed-commit").on("change", |hash| production.deploy(hash) )
+
+// Coming soon:
+//  * containerized deployment with container registries
+//  * TLS offloading
+//  * autoscaling and metrics
+//  * monitoring and alerting
+//  * rollout strategies
 
 // Finally, set up an ElasticIP to route traffic to the deployed application
-let production_ingress = provider.elastic_ingress(provider.domain("raftd.heavyobjects.com"))
+let production_ingress = provider.elastic_ingress(provider.domain("disco.heavyobjects.com"))
   .ports(80, 443)
   .forward_to(production)
 
-let testing_ingress = provider.elastic_ingress(provider.domain("raftd-testing.heavyobjects.com"))
+let testing_ingress = provider.elastic_ingress(provider.domain("disco-testing.heavyobjects.com"))
   .ports(80, 443)
   .forward_to(testing)
