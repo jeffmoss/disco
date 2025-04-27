@@ -33,6 +33,7 @@ tracing-subscriber = { version = "0.3.19", features = ["env-filter"] }
 rhai = { version = "1.21.0", features = ["sync"] }
 aws-sdk-ec2 = { version = "1.118.0" }
 aws-config = { version = "1.6.0" }
+async-trait = { version = "0.1.88" }
 
 # build-dependencies
 prost-build = "0.13.4"

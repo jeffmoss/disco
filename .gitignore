@@ -1,5 +1,6 @@
 target
 vendor
+id_ed25519
 
 /*.log
 /*.db

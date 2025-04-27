@@ -1,3 +1,2 @@
-mod client;
-
-pub use client::RaftClient;
+pub mod client;
+pub mod command;

@@ -1,32 +1,39 @@
 use clap::{Parser, Subcommand};
 
-use disco_client::RaftClient;
+use disco_client::client::RaftClient;
+use disco_client::command::{Command, Start};
 
 #[derive(Parser, Clone, Debug)]
 #[clap(author, version, about, long_about = None)]
 pub struct Opt {
-  #[clap(long)]
-  // Network address to connect with
-  pub addr: String,
-
   #[clap(subcommand)]
-  pub command: Command,
+  pub command: SubCommand,
 }
 
 #[derive(Subcommand, Clone, Debug)]
-pub enum Command {
+pub enum SubCommand {
   /// Get a value by key
   Get {
+    /// Network address to connect with
+    #[clap(long)]
+    addr: String,
+
     /// Key to look up
     key: String,
   },
   /// Set a value for a key
   Set {
+    /// Network address to connect with
+    #[clap(long)]
+    addr: String,
+
     /// Key to set
     key: String,
     /// Value to store
     value: String,
   },
+  /// Start the server
+  Start {},
 }
 
 #[tokio::main]
@@ -40,16 +47,21 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
   let options = Opt::parse();
 
-  let client = RaftClient::new(options.addr).await?;
-
   match options.command {
-    Command::Get { key } => {
+    SubCommand::Get { addr, key } => {
+      let client = RaftClient::new(addr).await?;
       let result = client.get_value(key).await?;
       println!("Value: {:?}", result);
     }
-    Command::Set { key, value } => {
+    SubCommand::Set { addr, key, value } => {
+      let client = RaftClient::new(addr).await?;
       let result = client.set_value(key, value).await?;
       println!("Set result: {:?}", result);
+    }
+    SubCommand::Start {} => {
+      let command = Start::new(4, "client.rhai");
+      command.run();
+      println!("Starting the client");
     }
   }
 

@@ -1,5 +1,27 @@
+use async_trait::async_trait;
+use rhai::{CustomType, TypeBuilder};
+
+#[derive(Debug, Clone, CustomType)]
+pub struct KeyPair {
+  pub name: String,
+  pub fingerprint: String,
+}
+
+#[derive(Debug, Clone, CustomType)]
+pub struct Address {
+  #[rhai_type(readonly)]
+  pub name: String,
+
+  #[rhai_type(readonly)]
+  pub public_ip: String,
+
+  #[rhai_type(readonly)]
+  pub fingerprint: String,
+}
+
 /// A trait for providers that can create key pairs and hosts.
-pub trait Provider: Send {
+#[async_trait]
+pub trait Provider: Send + Sync {
   /// Imports a public key to the provider using one existing on the local filesystem.
   ///
   /// # Arguments
@@ -10,19 +32,23 @@ pub trait Provider: Send {
   /// # Returns
   ///
   /// A future that resolves to the fingerprint of the imported key pair.
-  #[allow(async_fn_in_trait)]
   async fn import_public_key(
     &self,
     key_path: std::path::PathBuf,
-    key_name: String,
-  ) -> Result<String, Box<dyn std::error::Error + Send + Sync>>;
+    key_name: &String,
+  ) -> Result<KeyPair, Box<dyn std::error::Error + Send + Sync>>;
+
+  /// Creates a new IP address.
+  async fn create_ip_address(
+    &self,
+    name: &str,
+  ) -> Result<Address, Box<dyn std::error::Error + Send + Sync>>;
 
   /// Creates a new host.
   ///
   /// # Returns
   ///
   /// A future that resolves to the ID of the created host.
-  #[allow(async_fn_in_trait)]
   async fn create_host(
     &self,
     image_id: String,

@@ -1,19 +1,29 @@
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex};
 
-use crate::builder::cluster_module;
+use crate::builder::{cluster_module, Cluster};
+use crate::provider::{aws_provider_module, Address};
 
-use rhai;
+use rhai::{self, Dynamic, Scope};
 use rhai::{exported_module, EvalAltResult, Position};
 use tracing::{info, warn};
 
+use rhai::packages::Package;
+#[cfg(feature = "fs-access")]
+use rhai_fs::FilesystemPackage;
+
+#[derive(Clone)]
 pub struct Engine {
   script_path: PathBuf,
-  rhai_engine: rhai::Engine,
+  script_contents: String,
+  pub rhai_engine: Arc<rhai::Engine>,
+  pub ast: rhai::AST,
+  pub scope: Arc<Mutex<rhai::Scope<'static>>>,
 }
 
 impl Engine {
   pub fn new<S: Into<String>>(filename: S) -> Result<Self, Box<dyn std::error::Error>> {
-    let rhai_engine = Self::configure_rhai_engine();
+    let rhai_engine = Arc::new(Self::configure_rhai_engine());
 
     // Load the script file
     let (script_path, script_contents) = Self::load_script(&filename.into())?;
@@ -21,25 +31,32 @@ impl Engine {
     let expanded_filename = script_path.to_string_lossy();
 
     // Run the loaded script
-    if let Err(err) = rhai_engine
-      .compile(script_contents.clone())
-      .map_err(|err| err.into())
-      .and_then(|mut ast| {
-        ast.set_source(expanded_filename.to_string());
-        rhai_engine.run_ast(&ast)
-      })
-    {
-      warn!("{:=<1$}", "", expanded_filename.len());
-      warn!("{expanded_filename}");
-      warn!("{:=<1$}", "", expanded_filename.len());
-      eprintln!();
+    let ast = match rhai_engine.compile(script_contents.clone()) {
+      Ok(compiled_ast) => {
+        let mut compiled_ast = compiled_ast;
+        compiled_ast.set_source(expanded_filename.to_string());
+        compiled_ast
+      }
 
-      Self::print_script_error(&script_contents, *err);
-    }
+      Err(err) => {
+        warn!("{:=<1$}", "", expanded_filename.len());
+        warn!("{expanded_filename}");
+        warn!("{:=<1$}", "", expanded_filename.len());
+        eprintln!();
+
+        Self::print_script_error(&script_contents, err.clone().into());
+        return Err(Box::new(err));
+      }
+    };
+
+    let scope = Scope::new();
 
     Ok(Self {
       script_path,
-      rhai_engine,
+      script_contents,
+      rhai_engine: rhai_engine.into(),
+      ast,
+      scope: Arc::new(Mutex::new(scope)),
     })
   }
 
@@ -105,12 +122,43 @@ impl Engine {
 
   fn configure_rhai_engine() -> rhai::Engine {
     let mut engine = rhai::Engine::new();
-    let module = exported_module!(cluster_module);
-    // Register custom functions
-    engine.register_global_module(module.into());
 
-    // You can add more configuration here as needed
+    // Exposes functions like `aws_cluster` to the scripts
+    let cluster_module = exported_module!(cluster_module);
+    let aws_module = exported_module!(aws_provider_module);
+
+    // Register custom functions
+    engine.register_global_module(cluster_module.into());
+    engine.register_global_module(aws_module.into());
+    engine.build_type::<Address>();
+
+    #[cfg(feature = "fs-access")]
+    {
+      let fs_pkg = FilesystemPackage::new();
+      fs_pkg.register_into_engine(&mut engine);
+    }
 
     engine
+  }
+
+  pub fn main(&self) {
+    let mut scope = Scope::new();
+
+    let cluster = Cluster::new("default");
+
+    info!("About to run main()");
+    match self
+      .rhai_engine
+      .call_fn::<Dynamic>(&mut scope, &self.ast, "main", (cluster.clone(),))
+    {
+      Ok(_) => {
+        // Function call succeeded
+      }
+      Err(err) => {
+        Self::print_script_error(&self.script_contents, *err);
+      }
+    }
+
+    cluster.run_bootstrap(self);
   }
 }
