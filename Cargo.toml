@@ -20,6 +20,7 @@ members = [
 ]
 
 [workspace.dependencies]
+anyhow = { version = "1.0.97" }
 clap = { version = "4.5.23", features = ["derive", "env"] }
 config = "0.15.4"
 futures = "0.3.31"
@@ -34,6 +35,7 @@ rhai = { version = "1.21.0", features = ["sync"] }
 aws-sdk-ec2 = { version = "1.118.0" }
 aws-config = { version = "1.6.0" }
 async-trait = { version = "0.1.88" }
+russh = { version = "0.52.0" }
 
 # build-dependencies
 prost-build = "0.13.4"

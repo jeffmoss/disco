@@ -9,25 +9,25 @@ fn bootstrap() {
   // Check for remnants of a previous cluster?
   // Check for running, tagged instances?
 
-  ask("Do you want to bootstrap the cluster? (y/n)", |answer| {
-    if (answer == "y") {
-      // Create a default key pair for the cluster.
-      cluster.key_pair("./id_ed25519.pub");
+  let yes = ask("Do you want to bootstrap the cluster?");
 
-      let primary_node = cluster.node("ami-0e8c824f386e1de06");
+  if (yes) {
+    // Create a default key pair for the cluster.
+    cluster.set_key_pair("./id_ed25519", "./id_ed25519.pub");
 
-      // Bootstrap is only ever called if the primary_ip doesn't exist. Once
-      // it is attached to a node it can be tranferred to another node upon
-      // new leader election.
-      primary_node.attach_ip(cluster.primary_ip());
+    let primary_node = cluster.start_instance("ami-0e8c824f386e1de06", "t4g.micro");
 
-      // Connect and upload the daemon and start it.
-      primary_node.ssh_install();
+    // Bootstrap is only ever called if the primary_ip doesn't exist. Once
+    // it is attached to a node it can be tranferred to another node upon
+    // new leader election.
+    cluster.attach_ip(primary_node, cluster.primary_ip());
 
-      // Scale the cluster to 3 nodes.
-      cluster.scale(3);
-    } else {
-      print("Exiting...");
-    }
-  )
+    // Connect and upload the daemon and start it.
+    cluster.ssh_install();
+
+    // Scale the cluster to 3 nodes.
+    cluster.scale(3);
+  } else {
+    print("Exiting...");
+  }
 }

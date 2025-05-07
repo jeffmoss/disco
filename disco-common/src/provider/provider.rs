@@ -1,11 +1,7 @@
+use crate::builder::{Host, KeyPair};
+use anyhow::Result;
 use async_trait::async_trait;
 use rhai::{CustomType, TypeBuilder};
-
-#[derive(Debug, Clone, CustomType)]
-pub struct KeyPair {
-  pub name: String,
-  pub fingerprint: String,
-}
 
 #[derive(Debug, Clone, CustomType)]
 pub struct Address {
@@ -16,41 +12,110 @@ pub struct Address {
   pub public_ip: String,
 
   #[rhai_type(readonly)]
-  pub fingerprint: String,
+  pub id: String,
 }
 
 /// A trait for providers that can create key pairs and hosts.
 #[async_trait]
-pub trait Provider: Send + Sync {
+pub trait Provider: Send + Sync + std::fmt::Debug {
+  async fn new(cluster_name: String, region: String) -> Result<Self>
+  where
+    Self: Sized;
+
+  /// Checks for the existence of a key pair by the cluster name.
+  ///
+  /// # Arguments
+  /// * `name` - The name of the cluster to check for a key pair.
+  ///
+  /// # Returns
+  ///
+  /// A future that resolves to an `Option<KeyPair>`, which is `Some` if the key pair exists, or `None` if it does not.
+  async fn get_key_pair_by_name(&self, name: &str) -> Result<Option<String>>;
+
   /// Imports a public key to the provider using one existing on the local filesystem.
   ///
   /// # Arguments
   ///
   /// * `key_path` - Path to an existing public key file on the local filesystem
-  /// * `key_name` - Name to assign to the imported key pair
   ///
   /// # Returns
   ///
   /// A future that resolves to the fingerprint of the imported key pair.
   async fn import_public_key(
     &self,
-    key_path: std::path::PathBuf,
-    key_name: &String,
-  ) -> Result<KeyPair, Box<dyn std::error::Error + Send + Sync>>;
-
-  /// Creates a new IP address.
-  async fn create_ip_address(
-    &self,
     name: &str,
-  ) -> Result<Address, Box<dyn std::error::Error + Send + Sync>>;
+    private_key_path: &std::path::Path,
+    public_key_path: &std::path::Path,
+  ) -> Result<KeyPair>;
 
-  /// Creates a new host.
+  /// Checks for the existence of an IP address by the cluster name.
+  ///
+  /// # Arguments
+  /// * `name` - The name of the cluster to check for an IP address.
+  ///
+  /// # Returns
+  ///
+  /// A future that resolves to an `Option<Address>`, which is `Some` if the IP address exists, or `None` if it does not.
+  async fn get_ip_address_by_name(&self, name: &str) -> Result<Option<Address>>;
+
+  /// Creates a new IP address, checking for its existence first.
+  ///
+  /// # Arguments
+  /// * `name` - The name of the cluster to check for an IP address.
+  ///
+  /// # Returns
+  ///
+  /// A future that resolves to an `Address`, which contains the public IP address and fingerprint.
+  async fn primary_ip_address(&self, name: &str) -> Result<Address>;
+
+  async fn attach_ip_address_to_host(&self, address: &Address, host: &Host) -> Result<()>;
+
+  /// Checks for the existence of a host by the a tag name (ie. Name)
+  ///
+  /// # Arguments
+  /// * `name` - The name of the instance (ie. the cluster_name for a primary node).
+  ///
+  /// # Returns
+  ///
+  /// A future that resolves to an `Option<String>`, which is `Some` if the host exists, or `None` if it does not.
+  async fn get_host_by_name(&self, name: &str) -> Result<Option<Host>>;
+
+  /// Waits for a host to become available with a public IP address.
+  ///
+  /// # Arguments
+  ///
+  /// * `instance_id` - The ID of the instance to wait for.
+  /// * `timeout_seconds` - Maximum time to wait for the instance to become available.
+  /// * `poll_interval_seconds` - Time to wait between status checks.
+  ///
+  /// # Returns
+  ///
+  /// A future that resolves to a fully initialized `Host` struct with a valid public IP address.
+  /// Returns an error if the timeout is exceeded or if there's another issue retrieving the host information.
+  async fn wait_for_hosts(
+    &self,
+    instance_ids: &[String],
+    timeout_seconds: u64,
+    poll_interval_seconds: u64,
+  ) -> Result<Vec<Host>>;
+
+  /// Creates a new host, checking for its existence first.
+  ///
+  /// # Arguments
+  ///
+  /// * `name` - The name to tag the instance with (ie. the cluster_name for a primary node).
+  /// * `image_id` - The ID of the image to use for the host.
+  /// * `instance_type` - The type of instance to create.
   ///
   /// # Returns
   ///
   /// A future that resolves to the ID of the created host.
-  async fn create_host(
+  async fn create_hosts(
     &self,
-    image_id: String,
-  ) -> Result<String, Box<dyn std::error::Error + Send + Sync>>;
+    name: &str,
+    image_id: &str,
+    instance_type: &str,
+    key_pair: &KeyPair,
+    count: i64,
+  ) -> Result<Vec<Host>>;
 }

@@ -21,7 +21,7 @@ impl Start {
 
 impl Command for Start {
   fn run(&self) {
-    info!("Running engine");
-    self.engine.main();
+    info!("Bootstrapping Disco cluster...");
+    self.engine.start();
   }
 }

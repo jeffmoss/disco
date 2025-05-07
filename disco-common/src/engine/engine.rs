@@ -1,10 +1,9 @@
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
-use crate::builder::{cluster_module, Cluster};
-use crate::provider::{aws_provider_module, Address};
+use crate::builder::{cluster_module, host_module, utils_module};
 
-use rhai::{self, Dynamic, Scope};
+use rhai::{self, combine_with_exported_module, Dynamic, Module, Scope};
 use rhai::{exported_module, EvalAltResult, Position};
 use tracing::{info, warn};
 
@@ -124,13 +123,14 @@ impl Engine {
     let mut engine = rhai::Engine::new();
 
     // Exposes functions like `aws_cluster` to the scripts
+    let utils_module = exported_module!(utils_module);
     let cluster_module = exported_module!(cluster_module);
-    let aws_module = exported_module!(aws_provider_module);
+    let host_module = exported_module!(host_module);
 
     // Register custom functions
     engine.register_global_module(cluster_module.into());
-    engine.register_global_module(aws_module.into());
-    engine.build_type::<Address>();
+    engine.register_global_module(host_module.into());
+    engine.register_global_module(utils_module.into());
 
     #[cfg(feature = "fs-access")]
     {
@@ -141,15 +141,13 @@ impl Engine {
     engine
   }
 
-  pub fn main(&self) {
+  pub fn start(&self) {
     let mut scope = Scope::new();
 
-    let cluster = Cluster::new("default");
-
-    info!("About to run main()");
+    info!("About to run bootstrap()");
     match self
       .rhai_engine
-      .call_fn::<Dynamic>(&mut scope, &self.ast, "main", (cluster.clone(),))
+      .call_fn::<Dynamic>(&mut scope, &self.ast, "bootstrap", ())
     {
       Ok(_) => {
         // Function call succeeded
@@ -158,7 +156,5 @@ impl Engine {
         Self::print_script_error(&self.script_contents, *err);
       }
     }
-
-    cluster.run_bootstrap(self);
   }
 }
