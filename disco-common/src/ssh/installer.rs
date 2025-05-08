@@ -3,6 +3,7 @@ use crate::builder::{Host, KeyPair};
 use anyhow::{bail, Result};
 use std::{
   env,
+  fmt::Display,
   fs::{self},
   path::PathBuf,
   process::Stdio,
@@ -15,15 +16,23 @@ use tracing::info;
 pub struct Installer {
   key_pair: KeyPair,
   username: String,
+  remote_directory: String,
   certificate: Option<PathBuf>,
   tar_file: Mutex<Option<PathBuf>>,
 }
 
 impl Installer {
-  pub fn new(key_pair: KeyPair, username: &str, certificate: Option<PathBuf>) -> Arc<Self> {
+  pub fn new<U>(key_pair: KeyPair, username: U, certificate: Option<PathBuf>) -> Arc<Self>
+  where
+    U: Into<String>,
+  {
+    let username = username.into();
+    let remote_directory = format!("/home/{}/disco", username);
+
     Arc::new(Self {
       key_pair,
-      username: username.to_string(),
+      username,
+      remote_directory,
       certificate,
       tar_file: Mutex::new(None),
     })
@@ -38,6 +47,8 @@ impl Installer {
 
     // Stream the cached tar to remote
     self.stream_tar_to_remote(&session).await?;
+
+    session.close().await?;
 
     Ok(())
   }
@@ -57,8 +68,9 @@ impl Installer {
   }
 
   async fn ensure_remote_directory(&self, session: &Session) -> Result<()> {
-    let mkdir_command = "mkdir -p /home/ubuntu";
-    let exit_status = session.run_command(mkdir_command).await?;
+    let exit_status = session
+      .run_command(format!("mkdir -p {}", self.remote_directory))
+      .await?;
 
     if exit_status != 0 {
       bail!(
@@ -76,11 +88,11 @@ impl Installer {
 
     // Open the cached tar file for reading
     let tar_file = TokioFile::open(tar_path).await?;
-    let reader = BufReader::new(tar_file);
+    let reader = BufReader::with_capacity(256 * 1024, tar_file);
 
     // Stream to remote tar extraction command
     let exit_status = session
-      .run_command_with_input("tar -xzf - -C /home/ubuntu", reader)
+      .run_command_with_input(format!("tar -xzf - -C {}", self.remote_directory), reader)
       .await?;
 
     if exit_status != 0 {
@@ -112,7 +124,7 @@ impl Installer {
       .as_nanos();
 
     let pid = std::process::id();
-    let unique_name = format!("disco_{}_{}.tar.bz2", timestamp, pid);
+    let unique_name = format!("disco_{}_{}.tar.gz", timestamp, pid);
     let tar_path = env::temp_dir().join(unique_name);
 
     // Create the tar file
@@ -131,7 +143,7 @@ impl Installer {
     // Create a command to tar the current directory
     let mut tar_cmd = Command::new("tar");
     tar_cmd
-      .args(&["-czf", tar_path.to_str().unwrap(), "."])
+      .args(&["-chzf", tar_path.to_str().unwrap(), "."])
       .stdout(Stdio::null());
 
     let status = tar_cmd

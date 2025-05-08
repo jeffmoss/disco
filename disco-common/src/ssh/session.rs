@@ -40,7 +40,7 @@ impl Session {
     }
 
     let config = client::Config {
-      inactivity_timeout: Some(Duration::from_secs(5)),
+      inactivity_timeout: Some(Duration::from_secs(600)),
       preferred: Preferred {
         kex: Cow::Owned(vec![
           russh::kex::CURVE25519_PRE_RFC_8731,
@@ -84,29 +84,71 @@ impl Session {
   }
 
   // Method for running commands without input
-  pub async fn run_command(&self, command: &str) -> Result<u32> {
+  pub async fn run_command<S>(&self, command: S) -> Result<u32>
+  where
+    S: Into<Vec<u8>>,
+  {
     let mut channel = self.session.channel_open_session().await?;
     channel.exec(true, command).await?;
 
+    // Process the channel events
+    self.process_channel_events(&mut channel).await
+  }
+
+  // Method specifically for running commands with input
+  pub async fn run_command_with_input<S, R>(&self, command: S, input: R) -> Result<u32>
+  where
+    S: Into<Vec<u8>>,
+    R: AsyncRead + Unpin,
+  {
+    let mut channel = self.session.channel_open_session().await?;
+    channel.exec(true, command).await?;
+
+    // Send input data directly to the channel
+    channel.data(input).await?;
+
+    // Signal EOF after input is fully sent
+    channel.eof().await?;
+
+    // Process the channel events
+    self.process_channel_events(&mut channel).await
+  }
+
+  // Private helper method to process channel events and get the exit code
+  async fn process_channel_events(
+    &self,
+    channel: &mut russh::Channel<russh::client::Msg>,
+  ) -> Result<u32> {
     let mut code = None;
     let mut stdout = tokio::io::stdout();
+    let mut stderr = tokio::io::stderr();
 
+    // Wait for channel events
     loop {
-      // There's an event available on the session channel
       let Some(msg) = channel.wait().await else {
         break;
       };
 
       match msg {
-        // Write data to the terminal
+        // Write data to the terminal (stdout)
         ChannelMsg::Data { ref data } => {
           stdout.write_all(data).await?;
           stdout.flush().await?;
         }
+        // Write extended data to stderr
+        ChannelMsg::ExtendedData { ref data, ext } => {
+          // ext == 1 is stderr in the SSH protocol
+          if ext == 1 {
+            stderr.write_all(data).await?;
+            stderr.flush().await?;
+          }
+        }
         // The command has returned an exit code
         ChannelMsg::ExitStatus { exit_status } => {
           code = Some(exit_status);
-          // cannot leave the loop immediately, there might still be more data to receive
+          // cannot leave the loop immediately in the first method,
+          // but we can in the second method. For consistency, we'll
+          // continue in both cases until there are no more messages.
         }
         _ => {}
       }
@@ -118,93 +160,7 @@ impl Session {
     }
   }
 
-  // Method specifically for running commands with input
-  pub async fn run_command_with_input<R>(&self, command: &str, mut input: R) -> Result<u32>
-  where
-    R: AsyncReadExt + Unpin,
-  {
-    let mut channel = self.session.channel_open_session().await?;
-    channel.exec(true, command).await?;
-
-    let mut code = None;
-    let mut stdout = tokio::io::stdout();
-    let mut stderr = tokio::io::stderr();
-
-    let mut stdin_closed = false;
-
-    // Buffer for reading from the stdin source
-    let mut buf = vec![0; 8192]; // 8KB buffer for performance
-
-    loop {
-      tokio::select! {
-          // Read from input and send to the remote process
-          r = input.read(&mut buf), if !stdin_closed => {
-              match r {
-                  Ok(0) => {
-                      // End of input stream, send EOF
-                      stdin_closed = true;
-                      channel.eof().await?;
-                  },
-                  Ok(n) => {
-                      // Send data to the remote process
-                      channel.data(&buf[..n]).await?;
-                  },
-                  Err(e) => return Err(e.into()),
-              }
-          },
-
-          // There's an event available on the session channel
-          Some(msg) = channel.wait() => {
-              match msg {
-                  // Write data to the terminal
-                  ChannelMsg::Data { ref data } => {
-                      stdout.write_all(data).await?;
-                      stdout.flush().await?;
-                  },
-                                  // Write extended data to stderr
-                ChannelMsg::ExtendedData { ref data, ext } => {
-                  // ext == 1 is stderr in the SSH protocol
-                  if ext == 1 {
-                      stderr.write_all(data).await?;
-                      stderr.flush().await?;
-                  }
-              },
-                  // The command has returned an exit code
-                  ChannelMsg::ExitStatus { exit_status } => {
-                      code = Some(exit_status);
-                      if !stdin_closed {
-                          channel.eof().await?;
-                          stdin_closed = true;
-                      }
-                  },
-                  _ => {}
-              }
-
-              // If we have an exit code and stdin is closed, we can exit
-              if code.is_some() && stdin_closed {
-                  break;
-              }
-          },
-
-          // No more events and stdin is still open
-          else => {
-              if !stdin_closed {
-                  channel.eof().await?;
-                  stdin_closed = true;
-              } else {
-                  break;
-              }
-          }
-      }
-    }
-
-    match code {
-      Some(exit_code) => Ok(exit_code),
-      None => bail!("Program did not exit cleanly"),
-    }
-  }
-
-  async fn close(&mut self) -> Result<()> {
+  pub async fn close(&self) -> Result<()> {
     self
       .session
       .disconnect(Disconnect::ByApplication, "", "English")
