@@ -82,12 +82,18 @@ impl Cluster {
   }
 
   // Setting the key pair with a closure
-  pub fn update_key_pair<F>(&self, f: F)
+  pub fn update_key_pair<F, E>(&self, f: F) -> Result<(), E>
   where
-    F: FnOnce(Option<&KeyPair>) -> Option<KeyPair>,
+    F: FnOnce(Option<&KeyPair>) -> Result<Option<KeyPair>, E>,
   {
     let mut guard = self.inner.key_pair.write().unwrap();
-    *guard = f(guard.as_ref());
+    match f(guard.as_ref()) {
+      Ok(new_key_pair) => {
+        *guard = new_key_pair;
+        Ok(())
+      }
+      Err(e) => Err(e),
+    }
   }
 
   pub fn each_host<F>(&self, f: F)
@@ -107,8 +113,6 @@ impl Cluster {
 
 #[export_module]
 pub mod cluster_module {
-  use std::{fs::File, io::Read};
-
   use crate::ssh::Installer;
 
   pub type Cluster = super::Cluster;
@@ -143,7 +147,12 @@ pub mod cluster_module {
   }
 
   /// Ensure that the key_pair exists in the AWS account by creating if it doesn't exist
-  pub fn set_key_pair(cluster: &mut Cluster, private_key: &str, public_key: &str) -> Dynamic {
+  #[rhai_fn(return_raw)]
+  pub fn set_key_pair(
+    cluster: &mut Cluster,
+    private_key: &str,
+    public_key: &str,
+  ) -> Result<(), Box<EvalAltResult>> {
     // Convert the string path to PathBuf
     let private_key_path = Path::new(private_key);
     let public_key_path = Path::new(public_key);
@@ -151,33 +160,44 @@ pub mod cluster_module {
     task::block_in_place(|| {
       let handle = Handle::current();
 
-      // Create a result variable to store the outcome
-      let mut result_dynamic = Dynamic::from(());
+      // Use the improved update_key_pair that handles Results
+      cluster.update_key_pair(|_current_key_pair| {
+        let provider = cluster.provider();
+        let name = cluster.name();
 
-      // Use update_key_pair with a closure that calls import_public_key while holding the lock
-      cluster.update_key_pair(|_| {
-        // This closure runs while holding the write lock
-        match handle.block_on(cluster.provider().import_public_key(
-          cluster.name(),
-          private_key_path,
-          public_key_path,
-        )) {
-          Ok(key_pair) => {
-            // Store the result for returning later
-            result_dynamic = Dynamic::from(key_pair.clone());
-            // Return Some(key_pair) to update the key_pair field
-            Some(key_pair)
+        // Check if key pair exists
+        let existing_fingerprint = handle
+          .block_on(provider.get_key_pair_by_name(name))
+          .map_err(|e| format!("Failed to check for existing key pair: {}", e))?;
+
+        // If we have an existing fingerprint, check if it matches
+        if let Some(fingerprint) = existing_fingerprint {
+          let fingerprints_match = handle
+            .block_on(KeyPair::fingerprint_matches_local_public_key(
+              &fingerprint,
+              public_key_path,
+            ))
+            .map_err(|e| format!("Failed to compare fingerprints: {}", e))?;
+
+          if !fingerprints_match {
+            return Err("Key pair exists in AWS but has a different fingerprint".into());
           }
-          Err(err) => {
-            warn!("Failed to import public key: {:?}", err);
-            // Return the current value (don't change anything)
-            None
-          }
+
+          // Fingerprints match, return the existing key pair
+          Ok(Some(KeyPair {
+            name: name.to_string(),
+            private_key: private_key_path.to_path_buf(),
+            fingerprint,
+          }))
+        } else {
+          // No existing key pair, import a new one
+          let key_pair = handle
+            .block_on(provider.import_public_key(name, private_key_path, public_key_path))
+            .map_err(|e| format!("Failed to import public key: {}", e))?;
+
+          Ok(Some(key_pair))
         }
-      });
-
-      // Return the result after the update_key_pair call completes
-      result_dynamic
+      })
     })
   }
 
@@ -313,6 +333,8 @@ pub mod cluster_module {
             let installer_clone = installer.clone();
 
             // Spawn the task into the JoinSet
+            info!("Spawning SSH installation task for host: {:?}", &host_clone);
+
             set.spawn(async move {
               match installer_clone.install_to_host(&host_clone).await {
                 Ok(_) => {
@@ -328,11 +350,14 @@ pub mod cluster_module {
                 }
               }
             });
+
+            info!("Spawned SSH installation task for host");
           });
 
           // Use JoinSet to await all tasks and collect results
           let mut all_success = true;
           while let Some(result) = set.join_next().await {
+            info!("Awaiting a thread to finish");
             match result {
               Ok(success) => {
                 if !success {
@@ -344,6 +369,7 @@ pub mod cluster_module {
                 all_success = false;
               }
             }
+            info!("Thread finished");
           }
 
           all_success

@@ -3,7 +3,7 @@ use std::sync::{Arc, Mutex};
 
 use crate::builder::{cluster_module, host_module, utils_module};
 
-use rhai::{self, combine_with_exported_module, Dynamic, Module, Scope};
+use rhai::{self, Dynamic, Scope};
 use rhai::{exported_module, EvalAltResult, Position};
 use tracing::{info, warn};
 

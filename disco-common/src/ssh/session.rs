@@ -1,8 +1,8 @@
 use super::client::Client;
-use anyhow::{bail, Result};
-use russh::{client, keys::*, ChannelMsg, Disconnect, Preferred};
+use russh::keys::{load_openssh_certificate, load_secret_key, PrivateKeyWithHashAlg};
+use russh::{client, ChannelMsg, Disconnect, Preferred};
 use std::{borrow::Cow, path::Path, sync::Arc, time::Duration};
-use tokio::io::{AsyncRead, AsyncReadExt, AsyncWriteExt};
+use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt};
 use tokio::net::ToSocketAddrs;
 
 // Define a helper enum for stdin sources
@@ -30,7 +30,7 @@ impl Session {
     user: impl Into<String>,
     openssh_cert_path: Option<P>,
     addrs: A,
-  ) -> Result<Self> {
+  ) -> Result<Self, Box<dyn std::error::Error>> {
     let key_pair = load_secret_key(key_path, None)?;
 
     // load ssh certificate
@@ -68,7 +68,7 @@ impl Session {
         .await?;
 
       if !auth_res.success() {
-        anyhow::bail!("Authentication (with publickey) failed");
+        return Err("Authentication (with publickey) failed".into());
       }
     } else {
       let auth_res = session
@@ -76,7 +76,7 @@ impl Session {
         .await?;
 
       if !auth_res.success() {
-        anyhow::bail!("Authentication (with publickey+cert) failed");
+        return Err("Authentication (with publickey+cert) failed".into());
       }
     }
 
@@ -84,44 +84,146 @@ impl Session {
   }
 
   // Method for running commands without input
-  pub async fn run_command<S>(&self, command: S) -> Result<u32>
+  pub async fn run_command<S>(
+    &self,
+    command: S,
+  ) -> Result<u32, Box<dyn std::error::Error + Send + Sync>>
   where
     S: Into<Vec<u8>>,
   {
-    let mut channel = self.session.channel_open_session().await?;
+    let channel = self.session.channel_open_session().await?;
+
     channel.exec(true, command).await?;
 
+    // Get a reader for the channel
+    let (mut reader, _) = channel.split();
+
+    let mut stdout = tokio::io::stdout();
+    let mut stderr = tokio::io::stderr();
+
     // Process the channel events
-    self.process_channel_events(&mut channel).await
+    self
+      .process_channel_events(&mut reader, &mut stdout, &mut stderr)
+      .await
   }
 
   // Method specifically for running commands with input
-  pub async fn run_command_with_input<S, R>(&self, command: S, input: R) -> Result<u32>
+  pub async fn run_command_with_input<S, R>(
+    &self,
+    command: S,
+    input: R,
+  ) -> Result<u32, Box<dyn std::error::Error + Send + Sync>>
   where
     S: Into<Vec<u8>>,
     R: AsyncRead + Unpin,
   {
-    let mut channel = self.session.channel_open_session().await?;
+    let channel = self.session.channel_open_session().await?;
+
     channel.exec(true, command).await?;
 
-    // Send input data directly to the channel
-    channel.data(input).await?;
+    // Get a reader for the channel
+    let (mut reader, writer) = channel.split();
 
-    // Signal EOF after input is fully sent
-    channel.eof().await?;
-
-    // Process the channel events
-    self.process_channel_events(&mut channel).await
-  }
-
-  // Private helper method to process channel events and get the exit code
-  async fn process_channel_events(
-    &self,
-    channel: &mut russh::Channel<russh::client::Msg>,
-  ) -> Result<u32> {
-    let mut code = None;
     let mut stdout = tokio::io::stdout();
     let mut stderr = tokio::io::stderr();
+
+    // Sending needs to be performed asynchronously alongside receiving channel events
+    // in order to prevent the server buffer from filling up and causing a deadlock.
+    let (_, status) = tokio::try_join!(
+      async {
+        writer.data(input).await?;
+
+        // TODO: A progress indicator here would be nice
+
+        writer.eof().await.map_err(|e| e.into())
+      },
+      self.process_channel_events(&mut reader, &mut stdout, &mut stderr)
+    )?;
+
+    Ok(status)
+  }
+
+  // New method for running commands and capturing output
+  pub async fn run_command_with_output<S>(
+    &self,
+    command: S,
+  ) -> Result<String, Box<dyn std::error::Error + Send + Sync>>
+  where
+    S: Into<Vec<u8>>,
+  {
+    let channel = self.session.channel_open_session().await?;
+
+    channel.exec(true, command).await?;
+
+    // Get a reader for the channel
+    let (mut reader, _) = channel.split();
+
+    // Create buffer to capture output
+    let mut stdout_buffer = Vec::new();
+    let mut stderr = tokio::io::stderr();
+
+    // Process the channel events and capture output to buffers
+    let mut stdout_writer = tokio::io::BufWriter::new(&mut stdout_buffer);
+
+    let exit_code = self
+      .process_channel_events(&mut reader, &mut stdout_writer, &mut stderr)
+      .await?;
+
+    // Make sure all data is flushed to the buffers
+    stdout_writer.flush().await?;
+
+    // Convert buffers to strings
+    let stdout_str = String::from_utf8(stdout_buffer)?;
+
+    // If exit code is not 0, return an error with the output
+    if exit_code != 0 {
+      return Err(format!("Command failed with exit code {}", exit_code).into());
+    }
+
+    Ok(stdout_str)
+  }
+
+  // Method for running commands and capturing a single line of output
+  pub async fn run_command_with_output_line<S>(
+    &self,
+    command: S,
+  ) -> Result<String, Box<dyn std::error::Error + Send + Sync>>
+  where
+    S: Into<Vec<u8>>,
+  {
+    // Run the command and get the output
+    let output = self.run_command_with_output(command).await?;
+
+    // Split by newlines to count the lines
+    let lines: Vec<&str> = output.lines().collect();
+
+    if lines.len() != 1 {
+      return Err(
+        format!(
+          "Expected exactly one line of output, but got {} lines: {}",
+          lines.len(),
+          output
+        )
+        .into(),
+      );
+    }
+
+    // Return the single line of output (without any trailing newline)
+    Ok(lines[0].to_string())
+  }
+
+  // Modified helper method to process channel events and get the exit code
+  async fn process_channel_events<O, E>(
+    &self,
+    channel: &mut russh::ChannelReadHalf,
+    stdout: &mut O,
+    stderr: &mut E,
+  ) -> Result<u32, Box<dyn std::error::Error + Send + Sync>>
+  where
+    O: AsyncWrite + Unpin,
+    E: AsyncWrite + Unpin,
+  {
+    let mut code = None;
 
     // Wait for channel events
     loop {
@@ -130,7 +232,7 @@ impl Session {
       };
 
       match msg {
-        // Write data to the terminal (stdout)
+        // Write data to stdout
         ChannelMsg::Data { ref data } => {
           stdout.write_all(data).await?;
           stdout.flush().await?;
@@ -146,9 +248,6 @@ impl Session {
         // The command has returned an exit code
         ChannelMsg::ExitStatus { exit_status } => {
           code = Some(exit_status);
-          // cannot leave the loop immediately in the first method,
-          // but we can in the second method. For consistency, we'll
-          // continue in both cases until there are no more messages.
         }
         _ => {}
       }
@@ -156,11 +255,11 @@ impl Session {
 
     match code {
       Some(exit_code) => Ok(exit_code),
-      None => bail!("Program did not exit cleanly"),
+      None => Err("Program did not exit cleanly".into()),
     }
   }
 
-  pub async fn close(&self) -> Result<()> {
+  pub async fn close(&self) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     self
       .session
       .disconnect(Disconnect::ByApplication, "", "English")

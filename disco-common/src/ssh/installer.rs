@@ -3,7 +3,6 @@ use crate::builder::{Host, KeyPair};
 use anyhow::{bail, Result};
 use std::{
   env,
-  fmt::Display,
   fs::{self},
   path::PathBuf,
   process::Stdio,
@@ -48,7 +47,10 @@ impl Installer {
     // Stream the cached tar to remote
     self.stream_tar_to_remote(&session).await?;
 
-    session.close().await?;
+    session
+      .close()
+      .await
+      .map_err(|e| anyhow::anyhow!("Failed to close session: {}", e))?;
 
     Ok(())
   }
@@ -70,7 +72,8 @@ impl Installer {
   async fn ensure_remote_directory(&self, session: &Session) -> Result<()> {
     let exit_status = session
       .run_command(format!("mkdir -p {}", self.remote_directory))
-      .await?;
+      .await
+      .map_err(|e| anyhow::Error::msg(format!("Failed to run tar command: {}", e)))?;
 
     if exit_status != 0 {
       bail!(
@@ -80,6 +83,16 @@ impl Installer {
     }
 
     Ok(())
+  }
+
+  // Determine the remote hosts architecture
+  async fn get_remote_architecture(&self, session: &Session) -> Result<String> {
+    let arch = session
+      .run_command_with_output_line("uname -m")
+      .await
+      .map_err(|e| anyhow::anyhow!("Failed to run uname command: {}", e))?;
+
+    Ok(arch)
   }
 
   async fn stream_tar_to_remote(&self, session: &Session) -> Result<()> {
@@ -93,7 +106,8 @@ impl Installer {
     // Stream to remote tar extraction command
     let exit_status = session
       .run_command_with_input(format!("tar -xzf - -C {}", self.remote_directory), reader)
-      .await?;
+      .await
+      .map_err(|e| anyhow::anyhow!("Failed to run tar extraction command: {}", e))?;
 
     if exit_status != 0 {
       bail!(

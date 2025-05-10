@@ -1276,6 +1276,7 @@ dependencies = [
  "async-trait",
  "aws-config",
  "aws-sdk-ec2",
+ "base64ct",
  "rhai",
  "rhai-fs",
  "russh",
