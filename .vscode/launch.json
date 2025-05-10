@@ -1,0 +1,20 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "type": "lldb",
+      "request": "launch",
+      "name": "Debug disco client with args",
+      "cargo": {
+        "args": ["build", "--bin=disco", "--package=disco-client"],
+        "filter": {
+          "name": "disco",
+          "kind": "bin"
+        }
+      },
+      "args": ["start"],
+      "cwd": "${workspaceFolder}/test-deployment",
+      "stopOnEntry": false
+    }
+  ]
+}
