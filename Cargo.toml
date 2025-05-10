@@ -26,14 +26,15 @@ config = "0.15.4"
 futures = "0.3.31"
 openraft = { git = "https://github.com/databendlabs/openraft.git", features = ["type-alias"] }
 prost = "0.13.4"
+prost-types = "0.13.4"
 serde = { version = "1.0.216", features = ["derive"] }
-tokio = { version = "1.42.0", default-features = false, features = ["sync"] }
+tokio = { version = "1.42.0", default-features = false, features = ["sync", "fs", "process"] }
 tonic = "0.12.3"
 tracing = "0.1.41"
 tracing-subscriber = { version = "0.3.19", features = ["env-filter"] }
 rhai = { version = "1.21.0", features = ["sync"] }
-aws-sdk-ec2 = { version = "1.118.0" }
-aws-config = { version = "1.6.0" }
+aws-sdk-ec2 = { version = "1.118.0", default-features = false, features = ["rustls"] }
+aws-config = { version = "1.6.0", default-features = false, features = ["rustls"] }
 async-trait = { version = "0.1.88" }
 russh = { version = "0.52.0" }
 base64ct = { version = "1.7.3" }

@@ -1,0 +1,138 @@
+name: Build Releases
+
+on:
+  push:
+    branches: [main, master]
+    tags: ["v*"]
+  pull_request:
+    branches: [main, master]
+  workflow_dispatch: # Allows manual triggering
+
+jobs:
+  build-linux:
+    name: Build Linux Targets
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+
+      - name: Install Rust
+        uses: actions-rs/toolchain@v1
+        with:
+          profile: minimal
+          toolchain: stable
+          override: true
+
+      - name: Add Linux targets
+        run: |
+          rustup target add x86_64-unknown-linux-musl
+          rustup target add aarch64-unknown-linux-musl
+
+      - name: Install Linux build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            protobuf-compiler \
+            musl-tools \
+            gcc-aarch64-linux-gnu \
+            g++-aarch64-linux-gnu \
+            pkg-config \
+            libssl-dev
+
+      - name: Build x86_64-unknown-linux-musl
+        run: |
+          # Set environment variables for MUSL build
+          export PKG_CONFIG_ALLOW_CROSS=1
+          cargo build --release --target x86_64-unknown-linux-musl
+
+      - name: Build aarch64-unknown-linux-musl
+        run: |
+          # Set environment variables for MUSL build
+          export PKG_CONFIG_ALLOW_CROSS=1
+          export CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER=aarch64-linux-musl-gcc
+          cargo build --release --target aarch64-unknown-linux-musl
+
+      - name: Upload Linux artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux-binaries
+          path: |
+            target/x86_64-unknown-linux-musl/release/disco
+            target/aarch64-unknown-linux-musl/release/disco
+          if-no-files-found: error
+
+  build-macos:
+    name: Build macOS Targets
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v3
+
+      - name: Install Rust
+        uses: actions-rs/toolchain@v1
+        with:
+          profile: minimal
+          toolchain: stable
+          override: true
+
+      - name: Add macOS targets
+        run: |
+          rustup target add x86_64-apple-darwin
+          rustup target add aarch64-apple-darwin
+
+      - name: Install dependencies
+        run: |
+          brew install protobuf
+
+      - name: Build x86_64-apple-darwin
+        run: cargo build --release --target x86_64-apple-darwin
+
+      - name: Build aarch64-apple-darwin
+        run: cargo build --release --target aarch64-apple-darwin
+
+      - name: Upload macOS artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: macos-binaries
+          path: |
+            target/x86_64-apple-darwin/release/disco
+            target/aarch64-apple-darwin/release/disco
+          if-no-files-found: error
+
+  # Optional: Create a release when tags are pushed
+  create-release:
+    name: Create Release
+    needs: [build-linux, build-macos]
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+
+      - name: Prepare binaries
+        run: |
+          mkdir -p releases
+          # Prepare Linux binaries
+          cp linux-binaries/x86_64-unknown-linux-musl/release/disco releases/disco-x86_64-linux
+          cp linux-binaries/aarch64-unknown-linux-musl/release/disco releases/disco-aarch64-linux
+          # Prepare macOS binaries
+          cp macos-binaries/x86_64-apple-darwin/release/disco releases/disco-x86_64-macos
+          cp macos-binaries/aarch64-apple-darwin/release/disco releases/disco-aarch64-macos
+          # Make executable
+          chmod +x releases/*
+          # Create archives
+          cd releases
+          for file in disco-*; do
+            tar -czf "${file}.tar.gz" "${file}"
+            rm "${file}"
+          done
+
+      - name: Extract version
+        id: get_version
+        run: echo "VERSION=${GITHUB_REF#refs/tags/v}" >> $GITHUB_OUTPUT
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v1
+        with:
+          name: Release ${{ steps.get_version.outputs.VERSION }}
+          files: releases/*
+          draft: false
+          prerelease: false
