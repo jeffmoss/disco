@@ -26,7 +26,6 @@ config = "0.15.4"
 futures = "0.3.31"
 openraft = { git = "https://github.com/databendlabs/openraft.git", features = ["type-alias"] }
 prost = "0.13.4"
-prost-types = "0.13.4"
 serde = { version = "1.0.216", features = ["derive"] }
 tokio = { version = "1.42.0", default-features = false, features = ["sync", "fs", "process"] }
 tonic = "0.12.3"

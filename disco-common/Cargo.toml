@@ -15,7 +15,6 @@ repository    = { workspace = true }
 
 [features]
 default = ["aws", "fs-access"]
-static = []
 aws = ["dep:aws-sdk-ec2", "dep:aws-config"]
 fs-access = ["dep:rhai-fs"]
 

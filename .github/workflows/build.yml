@@ -27,29 +27,26 @@ jobs:
           rustup target add x86_64-unknown-linux-musl
           rustup target add aarch64-unknown-linux-musl
 
-      - name: Install Linux build dependencies
+      - name: Install Cross
         run: |
-          sudo apt-get update
-          sudo apt-get install -y \
-            protobuf-compiler \
-            musl-tools \
-            gcc-aarch64-linux-gnu \
-            g++-aarch64-linux-gnu \
-            pkg-config \
-            libssl-dev
+          cargo install cross
 
-      - name: Build x86_64-unknown-linux-musl
-        run: |
-          # Set environment variables for MUSL build
-          export PKG_CONFIG_ALLOW_CROSS=1
-          cargo build --release --target x86_64-unknown-linux-musl
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
 
-      - name: Build aarch64-unknown-linux-musl
-        run: |
-          # Set environment variables for MUSL build
-          export PKG_CONFIG_ALLOW_CROSS=1
-          export CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER=aarch64-linux-musl-gcc
-          cargo build --release --target aarch64-unknown-linux-musl
+      # - name: Cache Docker layers
+      #   uses: actions/cache@v4
+      #   with:
+      #     path: /tmp/.buildx-cache
+      #     key: ${{ runner.os }}-buildx-${{ github.sha }}
+      #     restore-keys: |
+      #       ${{ runner.os }}-buildx-
+
+      - name: Build x86_64-unknown-linux-musl with Cross
+        run: cross build --release --target x86_64-unknown-linux-musl
+
+      - name: Build aarch64-unknown-linux-musl with Cross
+        run: cross build --release --target aarch64-unknown-linux-musl
 
       - name: Upload Linux artifacts
         uses: actions/upload-artifact@v4
@@ -57,7 +54,9 @@ jobs:
           name: linux-binaries
           path: |
             target/x86_64-unknown-linux-musl/release/disco
+            target/x86_64-unknown-linux-musl/release/discod
             target/aarch64-unknown-linux-musl/release/disco
+            target/aarch64-unknown-linux-musl/release/discod
           if-no-files-found: error
 
   build-macos:
@@ -94,10 +93,12 @@ jobs:
           name: macos-binaries
           path: |
             target/x86_64-apple-darwin/release/disco
+            target/x86_64-apple-darwin/release/discod
             target/aarch64-apple-darwin/release/disco
+            target/aarch64-apple-darwin/release/discod
           if-no-files-found: error
 
-  # Optional: Create a release when tags are pushed
+  # Create a release when tags are pushed
   create-release:
     name: Create Release
     needs: [build-linux, build-macos]
@@ -110,12 +111,14 @@ jobs:
       - name: Prepare binaries
         run: |
           mkdir -p releases
-          # Prepare Linux binaries
           cp linux-binaries/x86_64-unknown-linux-musl/release/disco releases/disco-x86_64-linux
+          cp linux-binaries/x86_64-unknown-linux-musl/release/discod releases/discod-x86_64-linux
           cp linux-binaries/aarch64-unknown-linux-musl/release/disco releases/disco-aarch64-linux
-          # Prepare macOS binaries
+          cp linux-binaries/aarch64-unknown-linux-musl/release/discod releases/discod-aarch64-linux
           cp macos-binaries/x86_64-apple-darwin/release/disco releases/disco-x86_64-macos
+          cp macos-binaries/x86_64-apple-darwin/release/discod releases/discod-x86_64-macos
           cp macos-binaries/aarch64-apple-darwin/release/disco releases/disco-aarch64-macos
+          cp macos-binaries/aarch64-apple-darwin/release/discod releases/discod-aarch64-macos
           # Make executable
           chmod +x releases/*
           # Create archives

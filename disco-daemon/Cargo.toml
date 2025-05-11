@@ -17,9 +17,6 @@ repository    = { workspace = true }
 [[bin]]
 name = "discod"
 
-[features]
-static = []
-
 [dependencies]
 clap               = { workspace = true }
 config             = { workspace = true }

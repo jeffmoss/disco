@@ -16,10 +16,6 @@ repository    = { workspace = true }
 [[bin]]
 name = "disco"
 
-
-[features]
-static = []
-
 [dependencies]
 clap               = { workspace = true }
 tokio              = { workspace = true }
