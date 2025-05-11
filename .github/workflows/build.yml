@@ -7,6 +7,9 @@ on:
   # Allow manual triggering from the Actions tab
   workflow_dispatch:
 
+permissions:
+  contents: write
+
 jobs:
   build-linux:
     name: Build Linux Targets
@@ -149,8 +152,8 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           name: Release ${{ github.ref_name }}
-          body_path: CHANGELOG.md
+          body: "Release ${{ github.ref_name }}"
           files: releases/*.tar.gz
           draft: false
-          prerelease: false
+          prerelease: true
           generate_release_notes: true
