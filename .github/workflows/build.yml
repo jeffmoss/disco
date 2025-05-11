@@ -33,29 +33,28 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
-      # - name: Cache Docker layers
-      #   uses: actions/cache@v4
-      #   with:
-      #     path: /tmp/.buildx-cache
-      #     key: ${{ runner.os }}-buildx-${{ github.sha }}
-      #     restore-keys: |
-      #       ${{ runner.os }}-buildx-
-
       - name: Build x86_64-unknown-linux-musl with Cross
         run: cross build --release --target x86_64-unknown-linux-musl
 
       - name: Build aarch64-unknown-linux-musl with Cross
         run: cross build --release --target aarch64-unknown-linux-musl
 
-      - name: Upload Linux artifacts
+      - name: Upload aarch64 Linux artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: linux-binaries
+          name: linux-aarch64
+          path: |
+            target/aarch64-unknown-linux-musl/release/disco
+            target/aarch64-unknown-linux-musl/release/discod
+          if-no-files-found: error
+
+      - name: Upload x86_64 Linux artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux-x86_64
           path: |
             target/x86_64-unknown-linux-musl/release/disco
             target/x86_64-unknown-linux-musl/release/discod
-            target/aarch64-unknown-linux-musl/release/disco
-            target/aarch64-unknown-linux-musl/release/discod
           if-no-files-found: error
 
   build-macos:
@@ -86,22 +85,28 @@ jobs:
       - name: Build aarch64-apple-darwin
         run: cargo build --release --target aarch64-apple-darwin
 
-      - name: Upload macOS artifacts
+      - name: Upload aarch64 macOS artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: macos-binaries
+          name: macos-aarch64
+          path: |
+            target/aarch64-apple-darwin/release/disco
+            target/aarch64-apple-darwin/release/discod
+          if-no-files-found: error
+
+      - name: Upload x86_64 macOS artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: macos-x86_64
           path: |
             target/x86_64-apple-darwin/release/disco
             target/x86_64-apple-darwin/release/discod
-            target/aarch64-apple-darwin/release/disco
-            target/aarch64-apple-darwin/release/discod
           if-no-files-found: error
 
   # Create a release when tags are pushed
   create-release:
     name: Create Release
     needs: [build-linux, build-macos]
-    if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     steps:
       - name: Download all artifacts
@@ -110,22 +115,31 @@ jobs:
       - name: Prepare binaries
         run: |
           mkdir -p releases
-          cp linux-binaries/x86_64-unknown-linux-musl/release/disco releases/disco-x86_64-linux
-          cp linux-binaries/x86_64-unknown-linux-musl/release/discod releases/discod-x86_64-linux
-          cp linux-binaries/aarch64-unknown-linux-musl/release/disco releases/disco-aarch64-linux
-          cp linux-binaries/aarch64-unknown-linux-musl/release/discod releases/discod-aarch64-linux
-          cp macos-binaries/x86_64-apple-darwin/release/disco releases/disco-x86_64-macos
-          cp macos-binaries/x86_64-apple-darwin/release/discod releases/discod-x86_64-macos
-          cp macos-binaries/aarch64-apple-darwin/release/disco releases/disco-aarch64-macos
-          cp macos-binaries/aarch64-apple-darwin/release/discod releases/discod-aarch64-macos
-          # Make executable
-          chmod +x releases/*
-          # Create archives
-          cd releases
-          for file in disco-*; do
-            tar -czf "${file}.tar.gz" "${file}"
-            rm "${file}"
+
+          echo "Downloaded artifacts:"
+          ls -la
+
+          # Process each artifact directory
+          for platform_arch in linux-aarch64 linux-x86_64 macos-aarch64 macos-x86_64; do
+            if [ -d "$platform_arch" ]; then
+              # Create a directory with the same name as the tar.gz will have
+              mkdir -p "disco-$platform_arch"
+              
+              # Find all executables and copy them to the new directory
+              find "$platform_arch" -type f -name "disco*" -exec cp {} "disco-$platform_arch/" \;
+              chmod +x "disco-$platform_arch"/disco*
+              
+              # Create tar.gz archive
+              tar -czf "releases/disco-$platform_arch.tar.gz" -C "disco-$platform_arch" .
+              
+              echo "Created archive for $platform_arch"
+            else
+              echo "Warning: Directory $platform_arch not found"
+            fi
           done
+
+          echo "Created archives:"
+          ls -la releases/
 
       - name: Extract version
         id: get_version
