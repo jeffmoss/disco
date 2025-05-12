@@ -1,0 +1,221 @@
+#!/bin/bash
+# Disco Installation Script
+# This script detects OS and architecture, downloads the appropriate Disco binary,
+# and installs it with root privileges.
+
+set -e
+
+# Hard-coded version
+DISCO_VERSION="0.0.1"
+DISCO_PORT=5080
+GITHUB_REPO="https://github.com/jeffmoss/disco/releases/download/v${DISCO_VERSION}"
+
+# ANSI color codes
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[0;33m'
+NC='\033[0m' # No Color
+
+# Function to print colored messages
+print_message() {
+    echo -e "${GREEN}[DISCO INSTALLER]${NC} $1"
+}
+
+print_error() {
+    echo -e "${RED}[ERROR]${NC} $1" >&2
+}
+
+print_warning() {
+    echo -e "${YELLOW}[WARNING]${NC} $1"
+}
+
+# Check if running with root privileges
+check_root() {
+    if [ "$(id -u)" -ne 0 ]; then
+        print_warning "This script needs to run with root privileges."
+
+        # Check for sudo
+        if command -v sudo >/dev/null 2>&1; then
+            print_message "Attempting to use sudo..."
+            exec sudo "$0" "$@"
+        # Check for doas (OpenBSD alternative to sudo)
+        elif command -v doas >/dev/null 2>&1; then
+            print_message "Attempting to use doas..."
+            exec doas "$0" "$@"
+        else
+            print_error "Neither sudo nor doas found. Please run this script as root."
+            exit 1
+        fi
+
+        # If exec fails for some reason
+        exit 1
+    fi
+}
+
+# Function to detect OS and architecture
+detect_system() {
+    # Detect OS
+    if [ "$(uname)" = "Darwin" ]; then
+        OS="macos"
+    elif [ "$(uname)" = "Linux" ]; then
+        OS="linux"
+    else
+        print_error "Unsupported operating system: $(uname)"
+        exit 1
+    fi
+
+    # Detect architecture
+    ARCH=$(uname -m)
+    case "$ARCH" in
+        x86_64|amd64)
+            ARCH="x86_64"
+            ;;
+        arm64|aarch64)
+            ARCH="aarch64"
+            ;;
+        *)
+            print_error "Unsupported architecture: $ARCH"
+            exit 1
+            ;;
+    esac
+
+    print_message "Detected system: $OS-$ARCH"
+}
+
+# Function to download and install the binary
+download_and_install() {
+    TARBALL="disco-${OS}-${ARCH}.tar.gz"
+    DOWNLOAD_URL="${GITHUB_REPO}/${TARBALL}"
+    TEMP_DIR=$(mktemp -d)
+    BIN_DIR="/usr/local/bin"
+    INSTALLER_DIR="$(dirname "$(realpath "$0")")"
+
+    print_message "Checking for local Disco binaries..."
+
+    # Flag to track if we need to download the tarball
+    NEED_DOWNLOAD=true
+
+    # Check if local copies exist and copy them if they do
+    if [ -f "${INSTALLER_DIR}/discod" ] && [ -f "${INSTALLER_DIR}/disco" ]; then
+        print_message "Found local copies of discod and disco. Using these instead of downloading..."
+        install -m 755 "${INSTALLER_DIR}/discod" "$BIN_DIR/"
+        install -m 755 "${INSTALLER_DIR}/disco" "$BIN_DIR/"
+        NEED_DOWNLOAD=false
+    elif [ -f "${INSTALLER_DIR}/discod" ]; then
+        print_message "Found local copy of discod. Using this instead of downloading..."
+        install -m 755 "${INSTALLER_DIR}/discod" "$BIN_DIR/"
+        NEED_DOWNLOAD=true  # Still need to download for disco
+    elif [ -f "${INSTALLER_DIR}/disco" ]; then
+        print_message "Found local copy of disco. Using this instead of downloading..."
+        install -m 755 "${INSTALLER_DIR}/disco" "$BIN_DIR/"
+        NEED_DOWNLOAD=true  # Still need to download for discod
+    else
+        print_message "No local binaries found. Will download from GitHub..."
+    fi
+
+    # Download the tarball if needed
+    if [ "$NEED_DOWNLOAD" = true ]; then
+        print_message "Downloading Disco v${DISCO_VERSION} for ${OS}-${ARCH}..."
+
+        # Download the tarball
+        if command -v curl >/dev/null 2>&1; then
+            curl -sSL "$DOWNLOAD_URL" -o "${TEMP_DIR}/${TARBALL}"
+        elif command -v wget >/dev/null 2>&1; then
+            wget -q "$DOWNLOAD_URL" -O "${TEMP_DIR}/${TARBALL}"
+        else
+            print_error "Neither curl nor wget found. Cannot download the binary."
+            rm -rf "$TEMP_DIR"
+            exit 1
+        fi
+
+        # Extract the tarball
+        print_message "Extracting..."
+        tar -xzf "${TEMP_DIR}/${TARBALL}" -C "$TEMP_DIR"
+
+        # Create bin directory if it doesn't exist
+        mkdir -p "$BIN_DIR"
+
+        # Install the binaries that weren't found locally
+        print_message "Installing missing binaries to $BIN_DIR..."
+        if [ ! -f "${INSTALLER_DIR}/discod" ]; then
+            find "$TEMP_DIR" -type f -executable -name "discod" | while read -r binary; do
+                install -m 755 "$binary" "$BIN_DIR/"
+            done
+        fi
+
+        if [ ! -f "${INSTALLER_DIR}/disco" ]; then
+            find "$TEMP_DIR" -type f -executable -name "disco" | while read -r binary; do
+                install -m 755 "$binary" "$BIN_DIR/"
+            done
+        fi
+    fi
+
+    # Ensure ownership is set to root
+    chown root:root "${BIN_DIR}/discod" "${BIN_DIR}/disco"
+    chmod 755 "${BIN_DIR}/discod" "${BIN_DIR}/disco"
+
+    print_message "Cleaning up..."
+    rm -rf "$TEMP_DIR"
+}
+
+# Function to setup systemd service (Linux)
+setup_systemd_service() {
+    SERVICE_ID=$(ip route get 1.1.1.1 |\
+        awk '{print $7}' |\
+        { IFS='.' read a b c d; echo $((a * 256**3 + b * 256**2 + c * 256 + d)); })
+
+    if [ -d "/etc/systemd/system" ]; then
+        print_message "Setting up systemd service..."
+
+        # Create systemd service file
+        cat > /etc/systemd/system/disco.service << EOF
+[Unit]
+Description=Disco Service
+After=network.target
+
+[Service]
+ExecStart=/usr/local/bin/discod --id $SERVICE_ID --addr 0.0.0.0:$DISCO_PORT
+Restart=on-failure
+User=root
+Group=root
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+        # Reload systemd, enable and start the service
+        systemctl daemon-reload
+        systemctl enable disco.service
+        systemctl start disco.service
+
+        print_message "Disco service has been enabled and started."
+
+    else
+        print_message "Only systemd is supported. Cannot install."
+    fi
+}
+
+# Main script execution
+main() {
+    print_message "Starting Disco installation (version ${DISCO_VERSION})..."
+
+    # Check for root privileges
+    check_root
+
+    # Detect OS and architecture
+    detect_system
+
+    # Download and install the binary
+    download_and_install
+
+    # Setup init script for Linux
+    if [ "$OS" = "linux" ]; then
+        setup_systemd_service
+    fi
+
+    print_message "Disco v${DISCO_VERSION} has been successfully installed!"
+    print_message "You can run 'disco' from the command line."
+}
+
+# Run the main function
+main

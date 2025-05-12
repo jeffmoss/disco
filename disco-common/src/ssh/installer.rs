@@ -47,6 +47,9 @@ impl Installer {
     // Stream the cached tar to remote
     self.stream_tar_to_remote(&session).await?;
 
+    // Run the installer
+    self.run_installer(&session).await?;
+
     session
       .close()
       .await
@@ -73,7 +76,7 @@ impl Installer {
     let exit_status = session
       .run_command(format!("mkdir -p {}", self.remote_directory))
       .await
-      .map_err(|e| anyhow::Error::msg(format!("Failed to run tar command: {}", e)))?;
+      .map_err(|e| anyhow::anyhow!(format!("Failed to run tar command: {}", e)))?;
 
     if exit_status != 0 {
       bail!(
@@ -83,16 +86,6 @@ impl Installer {
     }
 
     Ok(())
-  }
-
-  // Determine the remote hosts architecture
-  async fn get_remote_architecture(&self, session: &Session) -> Result<String> {
-    let arch = session
-      .run_command_with_output_line("uname -m")
-      .await
-      .map_err(|e| anyhow::anyhow!("Failed to run uname command: {}", e))?;
-
-    Ok(arch)
   }
 
   async fn stream_tar_to_remote(&self, session: &Session) -> Result<()> {
@@ -114,6 +107,19 @@ impl Installer {
         "Remote tar extraction failed with exit status: {}",
         exit_status
       );
+    }
+
+    Ok(())
+  }
+
+  async fn run_installer(&self, session: &Session) -> Result<()> {
+    let exit_status = session
+      .run_command(format!("sh {}/install", self.remote_directory))
+      .await
+      .map_err(|e| anyhow::anyhow!("Failed to run installer command: {}", e))?;
+
+    if exit_status != 0 {
+      bail!("Installer command failed with exit status: {}", exit_status);
     }
 
     Ok(())
