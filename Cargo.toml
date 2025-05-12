@@ -32,8 +32,9 @@ tonic = "0.12.3"
 tracing = "0.1.41"
 tracing-subscriber = { version = "0.3.19", features = ["env-filter"] }
 rhai = { version = "1.21.0", features = ["sync"] }
-aws-sdk-ec2 = { version = "1.118.0", default-features = false, features = ["rustls"] }
-aws-config = { version = "1.6.0", default-features = false, features = ["rustls"] }
+aws-sdk-ec2 = { version = "1.128.0", features = ["behavior-version-latest"] }
+aws-sdk-iam = { version = "1.70.0", features = ["behavior-version-latest"] }
+aws-config = { version = "1.6.2", features = ["behavior-version-latest"] }
 async-trait = { version = "0.1.88" }
 russh = { version = "0.52.0" }
 base64ct = { version = "1.7.3" }

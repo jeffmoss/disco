@@ -15,12 +15,13 @@ repository    = { workspace = true }
 
 [features]
 default = ["aws", "fs-access"]
-aws = ["dep:aws-sdk-ec2", "dep:aws-config"]
+aws = ["dep:aws-sdk-ec2", "dep:aws-sdk-iam", "dep:aws-config"]
 fs-access = ["dep:rhai-fs"]
 
 [dependencies]
 anyhow             = { workspace = true }
 aws-sdk-ec2        = { workspace = true, optional = true }
+aws-sdk-iam        = { workspace = true, optional = true }
 aws-config         = { workspace = true, optional = true }
 async-trait        = { workspace = true }
 base64ct           = { workspace = true }

@@ -5,15 +5,20 @@ use async_trait::async_trait;
 use aws_config::{self, BehaviorVersion};
 use aws_sdk_ec2::operation::describe_instances::DescribeInstancesOutput;
 use aws_sdk_ec2::types::{
-  DomainType, Filter, InstanceStateName, IpPermission, IpRange, ResourceType, Tag, TagSpecification,
+  DomainType, Filter, IamInstanceProfileSpecification, InstanceStateName, InstanceType,
+  IpPermission, IpRange, ResourceType, Tag as EC2Tag, TagSpecification as EC2TagSpecification,
+  UserIdGroupPair,
 };
-use aws_sdk_ec2::{config::Region, primitives::Blob, types::InstanceType, Client};
+use aws_sdk_ec2::{config::Region, primitives::Blob, Client as EC2Client};
+use aws_sdk_iam::types::Tag as IAMTag;
+use aws_sdk_iam::Client as IAMClient;
 use std::path::Path;
 
 #[derive(Debug, Clone)]
 pub struct AwsProvider {
   pub cluster_name: String,
-  pub client: Client,
+  pub ec2_client: EC2Client,
+  pub iam_client: IAMClient,
 }
 
 /// Represents an EC2 instance that may have incomplete information
@@ -93,11 +98,151 @@ impl AwsProvider {
     Ok(instances)
   }
 
+  /// Look for the named IAM role, create it if it doesn't exist with EC2 permissions
+  async fn iam_role(&self, name: &str) -> Result<String> {
+    // First, try to find existing role by name
+    match self.iam_client.get_role().role_name(name).send().await {
+      Ok(resp) => {
+        // Role exists, return its name
+        return Ok(
+          resp
+            .role()
+            .ok_or_else(|| anyhow::anyhow!("IAM role exists but has no data"))?
+            .role_name()
+            .to_string(),
+        );
+      }
+      Err(err) => {
+        // If error is not "role not found", return the error
+        if !err.to_string().contains("NoSuchEntity") {
+          return Err(err.into());
+        }
+        // Otherwise continue to create the role
+      }
+    }
+
+    // Create the assume role policy document for EC2
+    let assume_role_policy = r#"{
+      "Version": "2012-10-17",
+      "Statement": [
+          {
+              "Effect": "Allow",
+              "Principal": {
+                  "Service": "ec2.amazonaws.com"
+              },
+              "Action": "sts:AssumeRole"
+          }
+      ]
+  }"#;
+
+    // Create the IAM role
+    let create_role_resp = self
+      .iam_client
+      .create_role()
+      .role_name(name)
+      .description(format!("Role for EC2 instances in {}", name))
+      .assume_role_policy_document(assume_role_policy)
+      .max_session_duration(3600) // 1 hour
+      .tags(IAMTag::builder().key("Name").value(name).build()?)
+      .send()
+      .await
+      .with_context(|| format!("Failed to create IAM role '{}'", name))?;
+
+    let role = create_role_resp
+      .role()
+      .ok_or_else(|| anyhow::anyhow!("No role returned after creating IAM role"))?;
+
+    // Attach the AmazonEC2FullAccess policy to the role
+    self
+      .iam_client
+      .attach_role_policy()
+      .role_name(name)
+      .policy_arn("arn:aws:iam::aws:policy/AmazonEC2FullAccess") // Using AWS managed policy
+      .send()
+      .await
+      .with_context(|| format!("Failed to attach EC2 policy to role '{}'", name))?;
+
+    Ok(role.role_name().to_string())
+  }
+
+  /// Look for the named instance profile, create it if it doesn't exist and attach the IAM role
+  async fn instance_profile(&self, name: &str) -> Result<String> {
+    // Ensure the role exists before dealing with the instance profile
+    let role_name = self.iam_role(name).await?;
+
+    // Variable to track if we need to add role to profile
+    let mut profile_name = String::new();
+    let mut needs_role_attachment = false;
+
+    // Check if the instance profile already exists
+    match self
+      .iam_client
+      .get_instance_profile()
+      .instance_profile_name(name)
+      .send()
+      .await
+    {
+      Ok(resp) => {
+        // Instance profile exists
+        let profile = resp
+          .instance_profile()
+          .ok_or_else(|| anyhow::anyhow!("Instance profile exists but has no data"))?;
+
+        profile_name = profile.instance_profile_name().to_string();
+
+        // Check if the profile already has the role with the same name
+        let has_role = profile.roles().iter().any(|role| role.role_name() == name);
+
+        // If role is not attached, we'll need to attach it
+        needs_role_attachment = !has_role;
+      }
+      Err(err) => {
+        // If error is not "profile not found", return the error
+        if !err.to_string().contains("NoSuchEntity") {
+          return Err(err.into());
+        }
+
+        // Create a new instance profile
+        let response = self
+          .iam_client
+          .create_instance_profile()
+          .instance_profile_name(name)
+          .send()
+          .await
+          .with_context(|| format!("Failed to create instance profile '{}'", name))?;
+
+        let instance_profile = response
+          .instance_profile()
+          .ok_or_else(|| anyhow::anyhow!("No instance profile returned after creating"))?;
+
+        profile_name = instance_profile.instance_profile_name().to_string();
+        needs_role_attachment = true;
+      }
+    }
+
+    // Add the role to the instance profile if needed
+    if needs_role_attachment {
+      self
+        .iam_client
+        .add_role_to_instance_profile()
+        .instance_profile_name(&profile_name)
+        .role_name(role_name)
+        .send()
+        .await
+        .with_context(|| format!("Failed to add role to instance profile '{}'", name))?;
+
+      // Allow some time for the instance profile to propagate
+      tokio::time::sleep(tokio::time::Duration::from_secs(10)).await;
+    }
+
+    Ok(profile_name)
+  }
+
   /// Look for the named security group, create it if it doesn't exist, allowing traffic on port 22
   async fn security_group(&self, name: &str) -> Result<String> {
     // First, try to find existing security group by name
     let resp = self
-      .client
+      .ec2_client
       .describe_security_groups()
       .filters(Filter::builder().name("group-name").values(name).build())
       .send()
@@ -122,15 +267,15 @@ impl AwsProvider {
 
     // Create security group
     let create_resp = self
-      .client
+      .ec2_client
       .create_security_group()
       .group_name(name)
       .description(format!("Security group for SSH access to {}", name))
       .vpc_id(vpc_id)
       .tag_specifications(
-        TagSpecification::builder()
+        EC2TagSpecification::builder()
           .resource_type(ResourceType::SecurityGroup)
-          .tags(Tag::builder().key("Name").value(name).build())
+          .tags(EC2Tag::builder().key("Name").value(name).build())
           .build(),
       )
       .send()
@@ -144,7 +289,7 @@ impl AwsProvider {
 
     // Add inbound rule for SSH (port 22)
     self
-      .client
+      .ec2_client
       .authorize_security_group_ingress()
       .group_id(&group_id)
       .ip_permissions(
@@ -164,13 +309,35 @@ impl AwsProvider {
       .await
       .with_context(|| format!("Failed to add SSH rule to security group '{}'", name))?;
 
+    // Add inbound rule for port 5080 from the same security group
+    self
+      .ec2_client
+      .authorize_security_group_ingress()
+      .group_id(&group_id)
+      .ip_permissions(
+        IpPermission::builder()
+          .ip_protocol("tcp")
+          .from_port(5080)
+          .to_port(5080)
+          .user_id_group_pairs(
+            UserIdGroupPair::builder()
+              .group_id(&group_id) // Reference to the same security group
+              .description("Allow port 5080 access from instances in the same security group")
+              .build(),
+          )
+          .build(),
+      )
+      .send()
+      .await
+      .with_context(|| format!("Failed to add port 5080 rule to security group '{}'", name))?;
+
     Ok(group_id)
   }
 
   // Helper method to get the default VPC ID
   async fn get_default_vpc_id(&self) -> Result<String> {
     let resp = self
-      .client
+      .ec2_client
       .describe_vpcs()
       .filters(Filter::builder().name("isDefault").values("true").build())
       .send()
@@ -195,18 +362,20 @@ impl Provider for AwsProvider {
       .load()
       .await;
 
-    let client = Client::new(&shared_config);
+    let ec2_client = EC2Client::new(&shared_config);
+    let iam_client = IAMClient::new(&shared_config);
 
     Ok(AwsProvider {
       cluster_name,
-      client,
+      ec2_client,
+      iam_client,
     })
   }
 
   async fn get_ip_address_by_name(&self, name: &str) -> Result<Option<Address>> {
     // Get the list of Elastic IP addresses
     let resp = self
-      .client
+      .ec2_client
       .describe_addresses()
       .filters(Filter::builder().name("tag:Name").values(name).build())
       .send()
@@ -250,7 +419,7 @@ impl Provider for AwsProvider {
   async fn attach_ip_address_to_host(&self, address: &Address, host: &Host) -> Result<()> {
     // Associate the Elastic IP with the instance
     self
-      .client
+      .ec2_client
       .associate_address()
       .instance_id(&host.id)
       .allocation_id(&address.id)
@@ -269,7 +438,7 @@ impl Provider for AwsProvider {
   async fn get_key_pair_by_name(&self, name: &str) -> Result<Option<String>> {
     // Get the list of key pairs with the Name tag
     let resp = self
-      .client
+      .ec2_client
       .describe_key_pairs()
       .key_names(name)
       .send()
@@ -312,7 +481,7 @@ impl Provider for AwsProvider {
 
     // Import the key pair to AWS with tag in a single API call
     let resp = self
-      .client
+      .ec2_client
       .import_key_pair()
       .key_name(name)
       .public_key_material(Blob::new(public_key))
@@ -342,14 +511,14 @@ impl Provider for AwsProvider {
 
     // Allocate a new Elastic IP address
     let resp = self
-      .client
+      .ec2_client
       .allocate_address()
       .domain(DomainType::Vpc)
       // Add the tag specification to tag the IP address during allocation
       .tag_specifications(
-        TagSpecification::builder()
+        EC2TagSpecification::builder()
           .resource_type(ResourceType::ElasticIp)
-          .tags(Tag::builder().key("Name").value(name).build())
+          .tags(EC2Tag::builder().key("Name").value(name).build())
           .build(),
       )
       .send()
@@ -382,7 +551,7 @@ impl Provider for AwsProvider {
   async fn get_host_by_name(&self, name: &str) -> Result<Option<Host>> {
     // Get the list of EC2 instances with the given name
     let resp = self
-      .client
+      .ec2_client
       .describe_instances()
       .filters(Filter::builder().name("tag:Name").values(name).build())
       .send()
@@ -451,7 +620,7 @@ impl Provider for AwsProvider {
 
       // Query the instance status for all pending instances
       let resp = self
-        .client
+        .ec2_client
         .describe_instances()
         .set_instance_ids(Some(pending_instance_ids.clone()))
         .send()
@@ -516,9 +685,14 @@ impl Provider for AwsProvider {
       .await
       .with_context(|| format!("Failed to get or create security group for '{}'", name))?;
 
+    let instance_profile_name = self
+      .instance_profile(name)
+      .await
+      .with_context(|| format!("Failed to get or create instance profile for '{}'", name))?;
+
     // Create EC2 instances
     let resp = self
-      .client
+      .ec2_client
       .run_instances()
       .image_id(image)
       .instance_type(InstanceType::from(instance_type))
@@ -528,11 +702,17 @@ impl Provider for AwsProvider {
       .key_name(key_pair.name.as_str())
       // Set the security group to allow SSH access
       .security_group_ids(security_group_id)
+      // Set the IAM role for the instance
+      .iam_instance_profile(
+        IamInstanceProfileSpecification::builder()
+          .name(instance_profile_name)
+          .build(),
+      )
       // Add a Name tag to identify these instances
       .tag_specifications(
-        TagSpecification::builder()
+        EC2TagSpecification::builder()
           .resource_type(ResourceType::Instance)
-          .tags(Tag::builder().key("Name").value(name).build())
+          .tags(EC2Tag::builder().key("Name").value(name).build())
           .build(),
       )
       .send()
