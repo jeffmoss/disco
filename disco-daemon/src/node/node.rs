@@ -1,9 +1,9 @@
+use disco_common::engine::*;
 use std::sync::Arc;
 use tracing::info;
 
-use openraft::Config;
-use openraft::ServerState;
-use tokio::sync::Mutex;
+use openraft::{metrics::RaftServerMetrics, Config, ServerState};
+use tokio::sync::{watch::Receiver, Mutex};
 use tonic::transport::Server;
 
 use crate::controller::Controller;
@@ -15,6 +15,7 @@ use crate::raft_types::Raft;
 use crate::settings::Settings;
 use crate::store::LogStore;
 use crate::store::StateMachineStore;
+use crate::TypeConfig;
 
 use super::runtime;
 
@@ -29,7 +30,12 @@ pub struct NodeInner {
   addr: String,
   raft: Raft,
   state_machine_store: Arc<StateMachineStore>,
+
+  // cluster-wide settings that never change
   settings: Settings,
+
+  // each node runs a disco Engine for scripted customizations
+  engine: Engine,
 
   // controller is started and stopped based on raft leader status
   controller: Arc<Mutex<Option<Controller>>>,
@@ -65,12 +71,15 @@ impl Node {
     .await
     .unwrap();
 
+    let engine = Engine::new("node.rhai").unwrap();
+
     let node_inner = NodeInner {
       node_id,
       addr,
       raft,
       state_machine_store,
       settings,
+      engine,
       controller: Arc::new(Mutex::new(None)),
     };
 
@@ -83,7 +92,15 @@ impl Node {
     let inner_arc = self.inner.clone();
 
     // Spawn the leader election monitor
-    runtime::spawn(Self::monitor_leader_election(inner_arc.clone()));
+    let metrics = inner_arc.raft.server_metrics();
+    let controller = inner_arc.controller.clone();
+    let max_concurrent_tasks = inner_arc.settings.external_commands_max;
+
+    runtime::spawn(Self::monitor_leader_election(
+      metrics,
+      controller,
+      max_concurrent_tasks,
+    ));
 
     // Now we can directly use the inner fields without any locking
     info!(
@@ -112,12 +129,13 @@ impl Node {
     Ok(())
   }
 
-  async fn monitor_leader_election(inner_arc: Arc<NodeInner>) {
+  async fn monitor_leader_election(
+    mut metrics: Receiver<RaftServerMetrics<TypeConfig>>,
+    controller: Arc<Mutex<Option<Controller>>>,
+    max_concurrent_tasks: usize,
+  ) {
     info!("Monitoring leader election");
 
-    // Get metrics directly
-    let mut metrics = inner_arc.raft.server_metrics();
-    let max_concurrent_tasks = inner_arc.settings.external_commands_max.clone();
     let mut current_state: Option<ServerState> = None;
 
     loop {
@@ -143,7 +161,10 @@ impl Node {
           info!("Node {} is the leader", mm.id);
 
           // Only lock the controller when we need to modify it
-          NodeInner::start_controller(&inner_arc.controller, max_concurrent_tasks).await;
+          NodeInner::start_controller(&controller, max_concurrent_tasks).await;
+
+          // Note: No engine interaction here, as we don't have access to it
+          // Any engine interaction would need to happen elsewhere
         }
         Some(ServerState::Follower) => {
           info!("Node {} is a follower", mm.id);

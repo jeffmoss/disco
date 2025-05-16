@@ -1,5 +1,5 @@
-use crate::builder::{Host, KeyPair};
-use crate::provider::{Address, Provider};
+use crate::builder::{Host, IPAddress, KeyPair};
+use crate::provider::Provider;
 use anyhow::{bail, Context, Result};
 use async_trait::async_trait;
 use aws_config::{self, BehaviorVersion};
@@ -372,7 +372,7 @@ impl Provider for AwsProvider {
     })
   }
 
-  async fn get_ip_address_by_name(&self, name: &str) -> Result<Option<Address>> {
+  async fn get_ip_address_by_name(&self, name: &str) -> Result<Option<IPAddress>> {
     // Get the list of Elastic IP addresses
     let resp = self
       .ec2_client
@@ -406,7 +406,7 @@ impl Provider for AwsProvider {
           ),
         };
 
-        return Ok(Some(Address {
+        return Ok(Some(IPAddress {
           name: name.to_string(),
           public_ip,
           id: allocation_id,
@@ -416,7 +416,7 @@ impl Provider for AwsProvider {
     };
   }
 
-  async fn attach_ip_address_to_host(&self, address: &Address, host: &Host) -> Result<()> {
+  async fn attach_ip_address_to_host(&self, address: &IPAddress, host: &Host) -> Result<()> {
     // Associate the Elastic IP with the instance
     self
       .ec2_client
@@ -504,7 +504,7 @@ impl Provider for AwsProvider {
     })
   }
 
-  async fn primary_ip_address(&self, name: &str) -> Result<Address> {
+  async fn primary_ip_address(&self, name: &str) -> Result<IPAddress> {
     if let Some(address) = self.get_ip_address_by_name(name).await? {
       return Ok(address);
     }
@@ -541,7 +541,7 @@ impl Provider for AwsProvider {
       ),
     };
 
-    Ok(Address {
+    Ok(IPAddress {
       name: name.to_string(),
       public_ip,
       id: allocation_id,

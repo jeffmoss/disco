@@ -1,18 +1,14 @@
-use anyhow::{anyhow, bail, Context, Result};
+use anyhow::{anyhow, Context, Result};
 use base64ct::{Base64, Encoding};
-use rhai::{CustomType, TypeBuilder};
 use russh::keys::{HashAlg, PublicKey};
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
-#[derive(Debug, Clone, CustomType)]
+#[derive(Debug, Clone)]
 pub struct KeyPair {
-  #[rhai_type(readonly)]
   pub name: String,
 
-  #[rhai_type(readonly)]
   pub private_key: std::path::PathBuf,
 
-  #[rhai_type(readonly)]
   pub fingerprint: String,
 }
 

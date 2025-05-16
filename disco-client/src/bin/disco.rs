@@ -1,7 +1,8 @@
 use clap::{Parser, Subcommand};
 
 use disco_client::client::RaftClient;
-use disco_client::command::{Command, Start};
+use disco_client::command::{Bootstrap, Command};
+use disco_common::engine::*;
 
 #[derive(Parser, Clone, Debug)]
 #[clap(author, version, about, long_about = None)]
@@ -47,6 +48,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
   let options = Opt::parse();
 
+  let engine = Engine::new("client.rhai")?;
+
   match options.command {
     SubCommand::Get { addr, key } => {
       let client = RaftClient::new(addr).await?;
@@ -59,9 +62,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
       println!("Set result: {:?}", result);
     }
     SubCommand::Start {} => {
-      let command = Start::new(4, "client.rhai");
-      command.run();
-      println!("Starting the client");
+      let _ = Bootstrap::new(4, engine).run()?;
     }
   }
 

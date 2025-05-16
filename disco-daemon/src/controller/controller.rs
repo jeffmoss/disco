@@ -1,17 +1,15 @@
 use disco_common::action::{Actor, BashCommand};
-use disco_common::engine::Engine;
+use disco_common::engine::*;
 use disco_common::task_pool::TaskPool;
 
 pub struct Controller {
   task_pool: TaskPool,
-  engine: Engine,
 }
 
 impl Controller {
   pub fn new(max_concurrent_tasks: usize) -> Controller {
     Controller {
       task_pool: TaskPool::new(max_concurrent_tasks),
-      engine: Engine::new("test-deployment/init.rhai").unwrap(),
     }
   }
 

@@ -1,8 +1,8 @@
 #[derive(Debug, Clone)]
-pub struct Host {
+pub struct IPAddress {
   pub name: String,
 
-  pub id: String,
-
   pub public_ip: String,
+
+  pub id: String,
 }

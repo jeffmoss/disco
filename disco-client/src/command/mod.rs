@@ -1,8 +1,8 @@
-mod start;
+mod bootstrap;
 
-pub use start::Start;
+pub use bootstrap::*;
 
 // A Command trait that ensures we have a run() method on each struct:
 pub trait Command {
-  fn run(&self);
+  fn run(&self) -> Result<(), String>;
 }

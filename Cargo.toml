@@ -21,6 +21,7 @@ members = [
 
 [workspace.dependencies]
 anyhow = { version = "1.0.97" }
+boa_engine = { version = "0.20.0" }
 clap = { version = "4.5.23", features = ["derive", "env"] }
 config = "0.15.4"
 futures = "0.3.31"

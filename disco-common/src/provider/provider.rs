@@ -1,19 +1,6 @@
-use crate::builder::{Host, KeyPair};
+use crate::builder::{Host, IPAddress, KeyPair};
 use anyhow::Result;
 use async_trait::async_trait;
-use rhai::{CustomType, TypeBuilder};
-
-#[derive(Debug, Clone, CustomType)]
-pub struct Address {
-  #[rhai_type(readonly)]
-  pub name: String,
-
-  #[rhai_type(readonly)]
-  pub public_ip: String,
-
-  #[rhai_type(readonly)]
-  pub id: String,
-}
 
 /// A trait for providers that can create key pairs and hosts.
 #[async_trait]
@@ -55,8 +42,8 @@ pub trait Provider: Send + Sync + std::fmt::Debug {
   ///
   /// # Returns
   ///
-  /// A future that resolves to an `Option<Address>`, which is `Some` if the IP address exists, or `None` if it does not.
-  async fn get_ip_address_by_name(&self, name: &str) -> Result<Option<Address>>;
+  /// A future that resolves to an `Option<IPAddress>`, which is `Some` if the IP address exists, or `None` if it does not.
+  async fn get_ip_address_by_name(&self, name: &str) -> Result<Option<IPAddress>>;
 
   /// Creates a new IP address, checking for its existence first.
   ///
@@ -65,10 +52,10 @@ pub trait Provider: Send + Sync + std::fmt::Debug {
   ///
   /// # Returns
   ///
-  /// A future that resolves to an `Address`, which contains the public IP address and fingerprint.
-  async fn primary_ip_address(&self, name: &str) -> Result<Address>;
+  /// A future that resolves to an `IPAddress`, which contains the public IP address and fingerprint.
+  async fn primary_ip_address(&self, name: &str) -> Result<IPAddress>;
 
-  async fn attach_ip_address_to_host(&self, address: &Address, host: &Host) -> Result<()>;
+  async fn attach_ip_address_to_host(&self, address: &IPAddress, host: &Host) -> Result<()>;
 
   /// Checks for the existence of a host by the a tag name (ie. Name)
   ///
