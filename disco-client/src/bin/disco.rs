@@ -34,7 +34,7 @@ pub enum SubCommand {
     value: String,
   },
   /// Start the server
-  Start {},
+  Bootstrap {},
 }
 
 #[tokio::main]
@@ -48,7 +48,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
   let options = Opt::parse();
 
-  let engine = Engine::new("client.rhai")?;
+  let engine = Engine::new("client.js")?;
 
   match options.command {
     SubCommand::Get { addr, key } => {
@@ -61,8 +61,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
       let result = client.set_value(key, value).await?;
       println!("Set result: {:?}", result);
     }
-    SubCommand::Start {} => {
-      let _ = Bootstrap::new(4, engine).run()?;
+    SubCommand::Bootstrap {} => {
+      let _ = Bootstrap::new(engine).run().await?;
     }
   }
 

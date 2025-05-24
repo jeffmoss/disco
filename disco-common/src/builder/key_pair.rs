@@ -1,9 +1,12 @@
-use anyhow::{anyhow, Context, Result};
+use anyhow::{Context, Result, anyhow};
 use base64ct::{Base64, Encoding};
+use boa_engine::JsData;
+use boa_gc::{Finalize, Trace};
 use russh::keys::{HashAlg, PublicKey};
 use std::path::Path;
 
 #[derive(Debug, Clone)]
+#[cfg_attr(feature = "js", derive(Trace, Finalize, JsData))]
 pub struct KeyPair {
   pub name: String,
 

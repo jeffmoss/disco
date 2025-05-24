@@ -1,28 +1,28 @@
+use super::Command;
+use async_trait::async_trait;
 use disco_common::engine::*;
-use disco_common::task_pool::TaskPool;
 use tracing::info;
 
-use super::Command;
-
 pub struct Bootstrap {
-  task_pool: TaskPool,
   engine: Engine,
 }
 
 impl Bootstrap {
-  pub fn new(max_concurrent_tasks: usize, engine: Engine) -> Self {
-    Self {
-      task_pool: TaskPool::new(max_concurrent_tasks),
-      engine,
-    }
+  pub fn new(engine: Engine) -> Self {
+    Self { engine }
   }
 }
 
+#[async_trait]
 impl Command for Bootstrap {
-  fn run(&self) -> Result<(), String> {
+  async fn run(&self) -> Result<(), EngineError> {
     info!("Bootstrapping Disco cluster...");
 
-    let _ = self.engine.callback("bootstrap", &[])?;
+    let cluster = self.engine.init().await?;
+
+    info!("Cluster initialized: {:?}", cluster);
+
+    let _ = self.engine.callback("bootstrap", &[cluster]).await?;
 
     Ok(())
   }

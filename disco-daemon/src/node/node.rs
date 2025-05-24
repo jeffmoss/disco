@@ -2,10 +2,11 @@ use disco_common::engine::*;
 use std::sync::Arc;
 use tracing::info;
 
-use openraft::{metrics::RaftServerMetrics, Config, ServerState};
-use tokio::sync::{watch::Receiver, Mutex};
+use openraft::{Config, ServerState, metrics::RaftServerMetrics};
+use tokio::sync::{Mutex, watch::Receiver};
 use tonic::transport::Server;
 
+use crate::TypeConfig;
 use crate::controller::Controller;
 use crate::grpc::app_service::AppServiceImpl;
 use crate::grpc::raft_service::RaftServiceImpl;
@@ -15,7 +16,6 @@ use crate::raft_types::Raft;
 use crate::settings::Settings;
 use crate::store::LogStore;
 use crate::store::StateMachineStore;
-use crate::TypeConfig;
 
 use super::runtime;
 
@@ -71,7 +71,9 @@ impl Node {
     .await
     .unwrap();
 
-    let engine = Engine::new("node.rhai").unwrap();
+    let engine = Engine::new("cluster.js").unwrap();
+
+    let _cluster = engine.callback("init", &[]).await.unwrap();
 
     let node_inner = NodeInner {
       node_id,
@@ -94,25 +96,22 @@ impl Node {
     // Spawn the leader election monitor
     let metrics = inner_arc.raft.server_metrics();
     let controller = inner_arc.controller.clone();
-    let max_concurrent_tasks = inner_arc.settings.external_commands_max;
 
     runtime::spawn(Self::monitor_leader_election(
-      metrics,
-      controller,
-      max_concurrent_tasks,
+      metrics, controller, inner_arc,
     ));
 
     // Now we can directly use the inner fields without any locking
     info!(
       "Node {} starting server at {}",
-      inner_arc.node_id, inner_arc.addr
+      self.inner.node_id, self.inner.addr
     );
 
     // Create the services
-    let internal_service = RaftServiceImpl::new(inner_arc.raft.clone());
+    let internal_service = RaftServiceImpl::new(self.inner.raft.clone());
     let api_service = AppServiceImpl::new(
-      inner_arc.raft.clone(),
-      inner_arc.state_machine_store.clone(),
+      self.inner.raft.clone(),
+      self.inner.state_machine_store.clone(),
     );
 
     // Start and await the server
@@ -123,7 +122,7 @@ impl Node {
       .add_service(protobuf::app_service_server::AppServiceServer::new(
         api_service,
       ))
-      .serve(inner_arc.addr.parse()?)
+      .serve(self.inner.addr.parse()?)
       .await?;
 
     Ok(())
@@ -132,7 +131,7 @@ impl Node {
   async fn monitor_leader_election(
     mut metrics: Receiver<RaftServerMetrics<TypeConfig>>,
     controller: Arc<Mutex<Option<Controller>>>,
-    max_concurrent_tasks: usize,
+    node_inner: Arc<NodeInner>,
   ) {
     info!("Monitoring leader election");
 
@@ -161,7 +160,13 @@ impl Node {
           info!("Node {} is the leader", mm.id);
 
           // Only lock the controller when we need to modify it
-          NodeInner::start_controller(&controller, max_concurrent_tasks).await;
+          NodeInner::start_controller(&controller).await;
+
+          node_inner
+            .engine
+            .callback("leader", &[mm.id.into()])
+            .await
+            .unwrap();
 
           // Note: No engine interaction here, as we don't have access to it
           // Any engine interaction would need to happen elsewhere
@@ -178,36 +183,22 @@ impl Node {
 }
 
 impl NodeInner {
-  pub async fn start_controller(
-    controller: &Arc<Mutex<Option<Controller>>>,
-    max_concurrent_tasks: usize,
-  ) {
+  pub async fn start_controller(controller: &Arc<Mutex<Option<Controller>>>) {
     let mut controller_guard = controller.lock().await;
     if controller_guard.is_none() {
-      *controller_guard = Some(Controller::new(max_concurrent_tasks));
+      *controller_guard = Some(Controller::new());
       info!("Started controller");
-
-      // We need to drop the guard to avoid deadlock when running the command
-      let controller_ref = controller_guard.as_ref().unwrap();
-      for i in 1..=20 {
-        if let Err(e) = controller_ref
-          .run_command(format!("sleep 5; echo 'Hello world {}'", i))
-          .await
-        {
-          info!("Failed to run command {}: {:?}", i, e);
-        }
-      }
     }
   }
 
   pub async fn stop_controller(controller: &Arc<Mutex<Option<Controller>>>) {
     let mut controller_guard = controller.lock().await;
-    if let Some(controller_ref) = controller_guard.take() {
+    if let Some(_controller_ref) = controller_guard.take() {
       drop(controller_guard); // Release the lock before the potentially long-running stop
 
-      if let Err(e) = controller_ref.stop().await {
-        info!("Failed to stop controller: {:?}", e);
-      }
+      // if let Err(e) = controller_ref.stop().await {
+      //   info!("Failed to stop controller: {:?}", e);
+      // }
     }
   }
 }

@@ -1,6 +1,5 @@
-use crate::builder::{Host, IPAddress, KeyPair};
-use crate::provider::Provider;
-use anyhow::{bail, Context, Result};
+use crate::provider::{InstanceInfo, InstanceState, Provider};
+use anyhow::{Context, Result, bail};
 use async_trait::async_trait;
 use aws_config::{self, BehaviorVersion};
 use aws_sdk_ec2::operation::describe_instances::DescribeInstancesOutput;
@@ -9,51 +8,50 @@ use aws_sdk_ec2::types::{
   IpPermission, IpRange, ResourceType, Tag as EC2Tag, TagSpecification as EC2TagSpecification,
   UserIdGroupPair,
 };
-use aws_sdk_ec2::{config::Region, primitives::Blob, Client as EC2Client};
-use aws_sdk_iam::types::Tag as IAMTag;
+use aws_sdk_ec2::{Client as EC2Client, config::Region, primitives::Blob};
 use aws_sdk_iam::Client as IAMClient;
+use aws_sdk_iam::types::Tag as IAMTag;
+use boa_engine::JsData;
+use boa_gc::{Finalize, Trace};
+use core::panic;
 use std::path::Path;
+use tokio::runtime::Handle;
+use tokio::task;
+
+impl From<InstanceStateName> for InstanceState {
+  fn from(state: InstanceStateName) -> Self {
+    match state {
+      InstanceStateName::Pending => InstanceState::Pending,
+      InstanceStateName::Running => InstanceState::Running,
+      InstanceStateName::ShuttingDown => InstanceState::ShuttingDown,
+      InstanceStateName::Terminated => InstanceState::Terminated,
+      InstanceStateName::Stopping => InstanceState::Stopping,
+      InstanceStateName::Stopped => InstanceState::Stopped,
+      _ => panic!("Unknown instance state: {:?}", state),
+    }
+  }
+}
 
 #[derive(Debug, Clone)]
+#[cfg_attr(feature = "js", derive(Trace, Finalize, JsData))]
 pub struct AwsProvider {
   pub cluster_name: String,
+
+  #[unsafe_ignore_trace]
   pub ec2_client: EC2Client,
+
+  #[unsafe_ignore_trace]
   pub iam_client: IAMClient,
 }
 
-/// Represents an EC2 instance that may have incomplete information
-#[derive(Debug, Clone)]
-pub struct InstanceInfo {
-  pub id: String,
-  pub name: Option<String>,
-  pub public_ip: Option<String>,
-  pub state: Option<InstanceStateName>,
-}
+impl Default for AwsProvider {
+  fn default() -> Self {
+    task::block_in_place(|| {
+      let handle = Handle::current();
 
-impl TryInto<Host> for InstanceInfo {
-  type Error = anyhow::Error;
-
-  fn try_into(self) -> Result<Host, Self::Error> {
-    // Check for required name
-    let name = match self.name {
-      Some(name) => name,
-      None => bail!("Instance '{}' does not have a name tag", self.id),
-    };
-
-    // Check for required public IP
-    let public_ip = match self.public_ip {
-      Some(ip) => ip,
-      None => bail!(
-        "Instance '{}' ({}) does not have a public IP address",
-        name,
-        self.id
-      ),
-    };
-
-    Ok(Host {
-      name,
-      id: self.id,
-      public_ip,
+      handle
+        .block_on(Self::new("disco".into(), "us-west-2".into()))
+        .expect("Failed to create provider")
     })
   }
 }
@@ -90,7 +88,7 @@ impl AwsProvider {
           name,
           id,
           public_ip,
-          state,
+          state: state.map(InstanceState::from),
         });
       }
     }
@@ -170,12 +168,8 @@ impl AwsProvider {
     // Ensure the role exists before dealing with the instance profile
     let role_name = self.iam_role(name).await?;
 
-    // Variable to track if we need to add role to profile
-    let mut profile_name = String::new();
-    let mut needs_role_attachment = false;
-
     // Check if the instance profile already exists
-    match self
+    let (profile_name, needs_role_attachment) = match self
       .iam_client
       .get_instance_profile()
       .instance_profile_name(name)
@@ -188,13 +182,11 @@ impl AwsProvider {
           .instance_profile()
           .ok_or_else(|| anyhow::anyhow!("Instance profile exists but has no data"))?;
 
-        profile_name = profile.instance_profile_name().to_string();
-
         // Check if the profile already has the role with the same name
         let has_role = profile.roles().iter().any(|role| role.role_name() == name);
 
         // If role is not attached, we'll need to attach it
-        needs_role_attachment = !has_role;
+        (profile.instance_profile_name().to_string(), !has_role)
       }
       Err(err) => {
         // If error is not "profile not found", return the error
@@ -215,10 +207,9 @@ impl AwsProvider {
           .instance_profile()
           .ok_or_else(|| anyhow::anyhow!("No instance profile returned after creating"))?;
 
-        profile_name = instance_profile.instance_profile_name().to_string();
-        needs_role_attachment = true;
+        (instance_profile.instance_profile_name().to_string(), true)
       }
-    }
+    };
 
     // Add the role to the instance profile if needed
     if needs_role_attachment {
@@ -372,7 +363,7 @@ impl Provider for AwsProvider {
     })
   }
 
-  async fn get_ip_address_by_name(&self, name: &str) -> Result<Option<IPAddress>> {
+  async fn get_ip_address_by_name(&self, name: &str) -> Result<Option<(String, String)>> {
     // Get the list of Elastic IP addresses
     let resp = self
       .ec2_client
@@ -406,29 +397,25 @@ impl Provider for AwsProvider {
           ),
         };
 
-        return Ok(Some(IPAddress {
-          name: name.to_string(),
-          public_ip,
-          id: allocation_id,
-        }));
+        return Ok(Some((public_ip, allocation_id)));
       }
       None => return Ok(None),
     };
   }
 
-  async fn attach_ip_address_to_host(&self, address: &IPAddress, host: &Host) -> Result<()> {
+  async fn attach_ip_address_to_instance(&self, address: &str, instance_id: &str) -> Result<()> {
     // Associate the Elastic IP with the instance
     self
       .ec2_client
       .associate_address()
-      .instance_id(&host.id)
-      .allocation_id(&address.id)
+      .instance_id(instance_id)
+      .allocation_id(address)
       .send()
       .await
       .with_context(|| {
         format!(
           "Failed to associate IP address {:?} with instance {:?}",
-          address, host
+          address, instance_id
         )
       })?;
 
@@ -459,21 +446,7 @@ impl Provider for AwsProvider {
     }
   }
 
-  async fn import_public_key(
-    &self,
-    name: &str,
-    private_key_path: &Path,
-    public_key_path: &Path,
-  ) -> Result<KeyPair> {
-    if let Some(fingerprint) = self.get_key_pair_by_name(name).await? {
-      // TODO: check if the fingerprint matches and update if needed
-      return Ok(KeyPair {
-        name: name.to_string(),
-        private_key: private_key_path.into(),
-        fingerprint,
-      });
-    }
-
+  async fn import_public_key(&self, name: &str, public_key_path: &Path) -> Result<String> {
     // Read the public key file
     let public_key = tokio::fs::read(public_key_path)
       .await
@@ -497,14 +470,10 @@ impl Provider for AwsProvider {
       ),
     };
 
-    Ok(KeyPair {
-      name: name.to_string(),
-      private_key: private_key_path.into(),
-      fingerprint,
-    })
+    Ok(fingerprint)
   }
 
-  async fn primary_ip_address(&self, name: &str) -> Result<IPAddress> {
+  async fn primary_ip_address(&self, name: &str) -> Result<(String, String)> {
     if let Some(address) = self.get_ip_address_by_name(name).await? {
       return Ok(address);
     }
@@ -525,14 +494,6 @@ impl Provider for AwsProvider {
       .await
       .with_context(|| format!("Failed to allocate new Elastic IP address for '{}'", name))?;
 
-    let allocation_id = match resp.allocation_id() {
-      Some(id) => id.to_string(),
-      None => bail!(
-        "No allocation ID returned from AWS after creating primary IP for '{}'",
-        name
-      ),
-    };
-
     let public_ip = match resp.public_ip() {
       Some(ip) => ip.to_string(),
       None => bail!(
@@ -541,14 +502,18 @@ impl Provider for AwsProvider {
       ),
     };
 
-    Ok(IPAddress {
-      name: name.to_string(),
-      public_ip,
-      id: allocation_id,
-    })
+    let allocation_id = match resp.allocation_id() {
+      Some(id) => id.to_string(),
+      None => bail!(
+        "No allocation ID returned from AWS after creating primary IP for '{}'",
+        name
+      ),
+    };
+
+    Ok((public_ip, allocation_id))
   }
 
-  async fn get_host_by_name(&self, name: &str) -> Result<Option<Host>> {
+  async fn get_instance_by_name(&self, name: &str) -> Result<Option<InstanceInfo>> {
     // Get the list of EC2 instances with the given name
     let resp = self
       .ec2_client
@@ -572,42 +537,34 @@ impl Provider for AwsProvider {
     })?;
 
     // Find the first non-terminated instance
-    let instance = instances
-      .into_iter()
-      .find(|instance| instance.state != Some(InstanceStateName::Terminated));
-
-    // Convert the found instance to a Host if it exists
-    match instance {
-      Some(instance) => {
-        // Try to convert to Host
-        Ok(Some(instance.try_into()?))
-      }
-      None => Ok(None),
-    }
+    Ok(instances.into_iter().find(|instance| match instance.state {
+      Some(InstanceState::Terminated) => false,
+      _ => true,
+    }))
   }
 
-  async fn wait_for_hosts(
+  async fn wait_for_instances(
     &self,
     instance_ids: &[String],
     timeout_seconds: u64,
     poll_interval_seconds: u64,
-  ) -> Result<Vec<Host>> {
+  ) -> Result<Vec<InstanceInfo>> {
     let start_time = tokio::time::Instant::now();
     let timeout = tokio::time::Duration::from_secs(timeout_seconds);
     let poll_interval = tokio::time::Duration::from_secs(poll_interval_seconds);
 
     // Track which instances are ready
-    let mut ready_hosts = Vec::with_capacity(instance_ids.len());
+    let mut ready_instances = Vec::with_capacity(instance_ids.len());
     let mut pending_instance_ids: Vec<String> = instance_ids.to_vec();
 
     loop {
       // Check if we've exceeded the timeout
       if start_time.elapsed() > timeout {
         bail!(
-                "Timed out waiting for instances to become available with public IPs. Ready: {}, Pending: {}",
-                ready_hosts.len(),
-                pending_instance_ids.len()
-            );
+          "Timed out waiting for instances to become available with public IPs. Ready: {}, Pending: {}",
+          ready_instances.len(),
+          pending_instance_ids.len()
+        );
       }
 
       // Wait before polling
@@ -638,19 +595,18 @@ impl Provider for AwsProvider {
       // First, identify ready instances and collect their IDs
       let mut ready_ids = Vec::new();
       for instance in &instances {
-        if instance.state == Some(InstanceStateName::Running) && instance.public_ip.is_some() {
+        if matches!(instance.state, Some(InstanceState::Running)) && instance.public_ip.is_some() {
           ready_ids.push(instance.id.clone());
         } else {
           new_pending.push(instance.id.clone());
         }
       }
 
-      // Now convert ready instances to Host objects and add them to ready_hosts
+      // Now add any instances ready to to ready_instances
       for instance in instances {
         if ready_ids.contains(&instance.id) {
           // This will never fail since we only included IDs where public_ip.is_some()
-          let host: Host = instance.try_into()?;
-          ready_hosts.push(host);
+          ready_instances.push(instance);
         }
       }
 
@@ -658,19 +614,19 @@ impl Provider for AwsProvider {
       pending_instance_ids = new_pending;
     }
 
-    Ok(ready_hosts)
+    Ok(ready_instances)
   }
 
   // NOTE: This function signature doesn't allow more than 1 without a naming
   // convention. Name is being used to identify the primary instance here.
-  async fn create_hosts(
+  async fn create_instances(
     &self,
     name: &str,
     image: &str,
     instance_type: &str,
-    key_pair: &KeyPair,
+    key_pair: &str,
     count: i64,
-  ) -> Result<Vec<Host>> {
+  ) -> Result<Vec<InstanceInfo>> {
     // Convert i64 count to i32 for AWS SDK
     let count_i32 = match i32::try_from(count) {
       Ok(val) => val,
@@ -699,7 +655,7 @@ impl Provider for AwsProvider {
       .min_count(count_i32)
       .max_count(count_i32)
       // Set the key pair for SSH access
-      .key_name(key_pair.name.as_str())
+      .key_name(key_pair)
       // Set the security group to allow SSH access
       .security_group_ids(security_group_id)
       // Set the IAM role for the instance
@@ -728,7 +684,7 @@ impl Provider for AwsProvider {
     let instances = resp.instances();
     if instances.is_empty() {
       bail!(
-        "No instances returned from AWS when creating hosts for '{}'",
+        "No instances returned from AWS when creating instances for '{}'",
         name
       );
     }
@@ -741,7 +697,7 @@ impl Provider for AwsProvider {
 
     if instance_ids.is_empty() {
       bail!(
-        "No valid instance IDs found in AWS response when creating hosts for '{}'",
+        "No valid instance IDs found in AWS response when creating instances for '{}'",
         name
       );
     }
@@ -752,16 +708,16 @@ impl Provider for AwsProvider {
     let poll_interval_seconds = 5;
 
     // Wait for all instances to be running and have public IPs
-    let hosts = self
-      .wait_for_hosts(&instance_ids, timeout_seconds, poll_interval_seconds)
-      .await
-      .with_context(|| {
-        format!(
-          "Failed while waiting for hosts to become available for '{}'",
-          name
-        )
-      })?;
-
-    Ok(hosts)
+    Ok(
+      self
+        .wait_for_instances(&instance_ids, timeout_seconds, poll_interval_seconds)
+        .await
+        .with_context(|| {
+          format!(
+            "Failed while waiting for instances to become available for '{}'",
+            name
+          )
+        })?,
+    )
   }
 }
