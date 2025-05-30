@@ -1,0 +1,12 @@
+#!/bin/bash
+
+grpcurl \
+  -cacert test-deployment/certs/ca.crt \
+  -cert test-deployment/certs/client.crt \
+  -key test-deployment/certs/client.key \
+  -servername localhost \
+  -proto ./disco-daemon/proto/app.proto \
+  -d "{\"nodes\":[{\"node_id\":\"1\",\"rpc_addr\":\"127.0.0.1:8383\"},{\"node_id\":\"2\",\"rpc_addr\":\"127.0.0.1:8384\"},{\"node_id\":\"3\",\"rpc_addr\":\"127.0.0.1:8385\"}]}" \
+  -import-path ./disco-daemon/proto \
+  127.0.0.1:8383 \
+  disco.AppService/Init

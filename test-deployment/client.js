@@ -7,9 +7,22 @@ export async function init() {
     // profile: "default",
   });
 
+  let role = await aws.role({
+    name: "heavyobjects",
+    // Default policy for now
+  });
+
+  // Initializes the bucket if it doesn't exist
+  let storage = await aws.storage({
+    bucket: "heavyobjects-storage",
+    role,
+  });
+
   return new Cluster({
     name: "heavyobjects",
     provider: aws,
+    role,
+    storage,
   });
 }
 

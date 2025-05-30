@@ -58,7 +58,7 @@ pub trait Provider: Send + Sync + std::fmt::Debug {
   /// Checks for the existence of an IP address by the cluster name.
   ///
   /// # Arguments
-  /// * `name` - The name of the cluster to check for an IP address.
+  /// * `name` - The name of the IP address.
   ///
   /// # Returns
   ///
@@ -68,13 +68,22 @@ pub trait Provider: Send + Sync + std::fmt::Debug {
   /// Creates a new IP address, checking for its existence first.
   ///
   /// # Arguments
-  /// * `name` - The name of the cluster to check for an IP address.
+  /// * `name` - The name of the IP address.
   ///
   /// # Returns
   ///
-  /// A future that resolves to an `IPAddress`, which contains the public IP address and fingerprint.
+  /// A future that resolves to an `Option<(public_ip, allocation_id)>` if the operation was successful.
   async fn primary_ip_address(&self, name: &str) -> Result<(String, String)>;
 
+  /// Attaches an IP address to an instance.
+  ///
+  /// # Arguments
+  /// * `address_id` - The ID of the IP address.
+  /// * `host_id` - The ID of the instance to attach the IP address to.
+  ///
+  /// # Returns
+  ///
+  /// A future that resolves if the IP the operation was successful.
   async fn attach_ip_address_to_instance(&self, address_id: &str, host_id: &str) -> Result<()>;
 
   /// Checks for the existence of a host by the a tag name (ie. Name)
@@ -125,4 +134,54 @@ pub trait Provider: Send + Sync + std::fmt::Debug {
     key_pair: &str,
     count: i64,
   ) -> Result<Vec<InstanceInfo>>;
+
+  async fn instance_profile(&self, role_name: &str, profile_name: &str) -> Result<()>;
+
+  /// Creates a new storage with private access and specific role read/write permissions.
+  ///
+  /// # Arguments
+  ///
+  /// * `storage_name` - The name of the bucket to create.
+  /// * `role` - The role that should have read/write access.
+  ///
+  /// # Returns
+  ///
+  /// A future that resolves to the bucket name if successful.
+  async fn create_storage(&self, storage_name: &str, role: &str) -> Result<()>;
+
+  /// Uploads a file to a storage with a given key.
+  ///
+  /// # Arguments
+  ///
+  /// * `storage_name` - The name of the storage.
+  /// * `file_path` - The local file path to upload.
+  /// * `key` - The key (path) for the object in the storage.
+  ///
+  /// # Returns
+  ///
+  /// A future that resolves if successful.
+  async fn upload_file_to_storage(
+    &self,
+    storage_name: &str,
+    file_path: &str,
+    key: &str,
+  ) -> Result<()>;
+
+  /// Downloads a file from a storage.
+  ///
+  /// # Arguments
+  ///
+  /// * `storage_name` - The name of the storage.
+  /// * `file_path` - The local file path to save the downloaded file.
+  /// * `key` - The key (path) for the object in the storage.
+  ///
+  /// # Returns
+  ///
+  /// A future that resolves if successful.
+  async fn download_file_from_storage(
+    &self,
+    storage_name: &str,
+    file_path: &str,
+    key: &str,
+  ) -> Result<()>;
 }

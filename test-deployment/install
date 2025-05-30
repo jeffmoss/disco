@@ -10,6 +10,14 @@ DISCO_VERSION="0.0.1"
 DISCO_PORT=5080
 GITHUB_REPO="https://github.com/jeffmoss/disco/releases/download/v${DISCO_VERSION}"
 
+# Certificate and user configuration
+DISCO_USER="disco"
+DISCO_GROUP="disco"
+CERT_DIR="/etc/disco/certs"
+CONFIG_DIR="/etc/disco"
+DATA_DIR="/var/lib/disco"
+LOG_DIR="/var/log/disco"
+
 # ANSI color codes
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -52,6 +60,88 @@ check_root() {
     fi
 }
 
+# Function to create disco user and directories
+create_user_and_directories() {
+    print_message "Creating disco user and required directories..."
+
+    # Create system user and group if they don't exist
+    if ! getent group "$DISCO_GROUP" >/dev/null 2>&1; then
+        groupadd --system "$DISCO_GROUP"
+        print_message "Created group: $DISCO_GROUP"
+    fi
+
+    if ! getent passwd "$DISCO_USER" >/dev/null 2>&1; then
+        useradd --system \
+                --gid "$DISCO_GROUP" \
+                --home-dir "$DATA_DIR" \
+                --shell /bin/false \
+                --comment "Disco Service Account" \
+                "$DISCO_USER"
+        print_message "Created user: $DISCO_USER"
+    fi
+
+    # Create required directories
+    mkdir -p "$CONFIG_DIR"
+    mkdir -p "$CERT_DIR"
+    mkdir -p "$DATA_DIR"
+    mkdir -p "$LOG_DIR"
+
+    # Set ownership and permissions
+    chown root:root "$CONFIG_DIR"
+    chmod 755 "$CONFIG_DIR"
+
+    chown root:"$DISCO_GROUP" "$CERT_DIR"
+    chmod 750 "$CERT_DIR"
+
+    chown "$DISCO_USER":"$DISCO_GROUP" "$DATA_DIR"
+    chmod 750 "$DATA_DIR"
+
+    chown "$DISCO_USER":"$DISCO_GROUP" "$LOG_DIR"
+    chmod 750 "$LOG_DIR"
+
+    print_message "Created directories with secure permissions"
+}
+
+# Function to install certificates
+install_certificates() {
+    local installer_dir="$(dirname "$(realpath "$0")")"
+    local certs_source_dir="${installer_dir}/certs"
+
+    print_message "Installing certificates..."
+
+    if [ ! -d "$certs_source_dir" ]; then
+        print_error "Certificate directory not found at: $certs_source_dir"
+        print_error "Please ensure the 'certs' directory is in the same location as this installer."
+        exit 1
+    fi
+
+    # Check for required certificate files
+    local required_certs=("ca.crt" "server.crt" "server.key" "client.crt" "client.key")
+    for cert_file in "${required_certs[@]}"; do
+        if [ ! -f "${certs_source_dir}/${cert_file}" ]; then
+            print_error "Required certificate file not found: ${cert_file}"
+            print_error "Please generate certificates using the gen_mtls_cert script first."
+            exit 1
+        fi
+    done
+
+    # Copy certificates with secure permissions
+    print_message "Copying certificates to $CERT_DIR..."
+    
+    # Copy CA certificate (readable by disco group)
+    install -m 640 -o root -g "$DISCO_GROUP" "${certs_source_dir}/ca.crt" "$CERT_DIR/"
+    
+    # Copy server certificates (readable by disco group)
+    install -m 640 -o root -g "$DISCO_GROUP" "${certs_source_dir}/server.crt" "$CERT_DIR/"
+    install -m 640 -o root -g "$DISCO_GROUP" "${certs_source_dir}/server.key" "$CERT_DIR/"
+    
+    # Copy client certificates (readable by disco group)
+    install -m 640 -o root -g "$DISCO_GROUP" "${certs_source_dir}/client.crt" "$CERT_DIR/"
+    install -m 640 -o root -g "$DISCO_GROUP" "${certs_source_dir}/client.key" "$CERT_DIR/"
+
+    print_message "Certificates installed with secure permissions (640, root:$DISCO_GROUP)"
+}
+
 # Function to detect OS and architecture
 detect_system() {
     # Detect OS
@@ -92,29 +182,9 @@ download_and_install() {
 
     print_message "Checking for local Disco binaries..."
 
-    # Flag to track if we need to download the tarball
-    NEED_DOWNLOAD=true
-
-    # Check if local copies exist and copy them if they do
-    if [ -f "${INSTALLER_DIR}/discod" ] && [ -f "${INSTALLER_DIR}/disco" ]; then
-        print_message "Found local copies of discod and disco. Using these instead of downloading..."
-        install -m 755 "${INSTALLER_DIR}/discod" "$BIN_DIR/"
-        install -m 755 "${INSTALLER_DIR}/disco" "$BIN_DIR/"
-        NEED_DOWNLOAD=false
-    elif [ -f "${INSTALLER_DIR}/discod" ]; then
-        print_message "Found local copy of discod. Using this instead of downloading..."
-        install -m 755 "${INSTALLER_DIR}/discod" "$BIN_DIR/"
-        NEED_DOWNLOAD=true  # Still need to download for disco
-    elif [ -f "${INSTALLER_DIR}/disco" ]; then
-        print_message "Found local copy of disco. Using this instead of downloading..."
-        install -m 755 "${INSTALLER_DIR}/disco" "$BIN_DIR/"
-        NEED_DOWNLOAD=true  # Still need to download for discod
-    else
-        print_message "No local binaries found. Will download from GitHub..."
-    fi
-
-    # Download the tarball if needed
-    if [ "$NEED_DOWNLOAD" = true ]; then
+    # Download if either binary is missing
+    if [ ! -f "${INSTALLER_DIR}/discod" ] || [ ! -f "${INSTALLER_DIR}/disco" ]; then
+        print_message "Local binaries missing or incomplete. Downloading from GitHub..."
         print_message "Downloading Disco v${DISCO_VERSION} for ${OS}-${ARCH}..."
 
         # Download the tarball
@@ -128,56 +198,123 @@ download_and_install() {
             exit 1
         fi
 
-        # Extract the tarball
+        # Extract tarball to temp directory
         print_message "Extracting..."
         tar -xzf "${TEMP_DIR}/${TARBALL}" -C "$TEMP_DIR"
 
-        # Create bin directory if it doesn't exist
-        mkdir -p "$BIN_DIR"
-
-        # Install the binaries that weren't found locally
-        print_message "Installing missing binaries to $BIN_DIR..."
-        if [ ! -f "${INSTALLER_DIR}/discod" ]; then
-            find "$TEMP_DIR" -type f -executable -name "discod" | while read -r binary; do
-                install -m 755 "$binary" "$BIN_DIR/"
-            done
-        fi
-
-        if [ ! -f "${INSTALLER_DIR}/disco" ]; then
-            find "$TEMP_DIR" -type f -executable -name "disco" | while read -r binary; do
-                install -m 755 "$binary" "$BIN_DIR/"
-            done
-        fi
+        # Copy extracted binaries to installer directory
+        find "$TEMP_DIR" -type f -executable -name "disco*" -exec cp {} "$INSTALLER_DIR/" \;
+    else
+        print_message "Found local copies of both binaries."
     fi
 
-    # Ensure ownership is set to root
-    chown root:root "${BIN_DIR}/discod" "${BIN_DIR}/disco"
-    chmod 755 "${BIN_DIR}/discod" "${BIN_DIR}/disco"
+    # Install binaries (always runs, handles overwriting)
+    print_message "Installing binaries to $BIN_DIR..."
+    install -m 755 "${INSTALLER_DIR}/discod" "$BIN_DIR/"
+    install -m 755 "${INSTALLER_DIR}/disco" "$BIN_DIR/"
 
-    print_message "Cleaning up..."
+    # Ensure proper ownership
+    chown root:root "${BIN_DIR}/discod" "${BIN_DIR}/disco"
+
+    print_message "Installation complete. Cleaning up temporary files..."
     rm -rf "$TEMP_DIR"
+
+    print_message "Binaries installed successfully:"
+    print_message "  discod: $(which discod)"
+    print_message "  disco: $(which disco)"
 }
 
-# Function to setup systemd service (Linux)
-setup_systemd_service() {
+# Function to create configuration file
+create_config() {
+    local config_file="${CONFIG_DIR}/disco.conf"
+    
+    print_message "Creating configuration file..."
+    
+    # Generate service ID based on IP (as in original script)
     SERVICE_ID=$(ip route get 1.1.1.1 |\
         awk '{print $7}' |\
         { IFS='.' read a b c d; echo $((a * 256**3 + b * 256**2 + c * 256 + d)); })
 
+    cat > "$config_file" << EOF
+# Disco Configuration File
+# Generated by installer on $(date)
+
+# Service Configuration
+DISCO_ID=$SERVICE_ID
+DISCO_ADDR=0.0.0.0:$DISCO_PORT
+
+# Certificate Paths
+DISCO_CA_CERT=$CERT_DIR/ca.crt
+DISCO_SERVER_CERT=$CERT_DIR/server.crt
+DISCO_SERVER_KEY=$CERT_DIR/server.key
+DISCO_CLIENT_CERT=$CERT_DIR/client.crt
+DISCO_CLIENT_KEY=$CERT_DIR/client.key
+
+# Data Directory
+DISCO_DATA_DIR=$DATA_DIR
+
+# Log Directory
+DISCO_LOG_DIR=$LOG_DIR
+EOF
+
+    chown root:"$DISCO_GROUP" "$config_file"
+    chmod 640 "$config_file"
+    
+    print_message "Configuration file created at: $config_file"
+}
+
+# Function to setup systemd service (Linux)
+setup_systemd_service() {
     if [ -d "/etc/systemd/system" ]; then
         print_message "Setting up systemd service..."
 
         # Create systemd service file
         cat > /etc/systemd/system/disco.service << EOF
 [Unit]
-Description=Disco Service
+Description=Disco Distributed Service
+Documentation=https://github.com/jeffmoss/disco
 After=network.target
+Wants=network.target
 
 [Service]
-ExecStart=/usr/local/bin/discod --id $SERVICE_ID --addr 0.0.0.0:$DISCO_PORT
+Type=simple
+User=$DISCO_USER
+Group=$DISCO_GROUP
+
+# Security settings
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=$DATA_DIR $LOG_DIR
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+
+# Load configuration from file
+EnvironmentFile=$CONFIG_DIR/disco.conf
+
+# Command to run (modify as needed based on your discod arguments)
+ExecStart=/usr/local/bin/discod \\
+    --id \${DISCO_ID} \\
+    --addr \${DISCO_ADDR} \\
+    --ca-cert \${DISCO_CA_CERT} \\
+    --server-cert \${DISCO_SERVER_CERT} \\
+    --server-key \${DISCO_SERVER_KEY} \\
+    --client-cert \${DISCO_CLIENT_CERT} \\
+    --client-key \${DISCO_CLIENT_KEY} \\
+    --data-dir \${DISCO_DATA_DIR}
+
+# Restart policy
 Restart=on-failure
-User=root
-Group=root
+RestartSec=5
+StartLimitIntervalSec=60
+StartLimitBurst=3
+
+# Logging
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=disco
 
 [Install]
 WantedBy=multi-user.target
@@ -186,18 +323,118 @@ EOF
         # Reload systemd, enable and start the service
         systemctl daemon-reload
         systemctl enable disco.service
-        systemctl start disco.service
 
-        print_message "Disco service has been enabled and started."
+        print_message "Disco service has been installed and enabled."
+
+        # Get current service status
+        SERVICE_STATUS=$(systemctl is-active disco.service 2>/dev/null || echo "inactive")
+
+        case "$SERVICE_STATUS" in
+            "active")
+                print_message "Disco service is running. Restarting with new configuration..."
+                ACTION="restart"
+                ;;
+            "failed")
+                print_message "Disco service failed previously. Starting fresh..."
+                ACTION="restart"
+                ;;
+            *)
+                print_message "Starting disco service..."
+                ACTION="start"
+                ;;
+        esac
+
+        if systemctl $ACTION disco.service; then
+            print_message "Disco service ${ACTION}ed successfully."
+            
+            # Optional: Show status
+            sleep 2
+            if systemctl is-active --quiet disco.service; then
+                print_message "Service is running and healthy."
+            else
+                print_warning "Service may not be running properly. Check status with: systemctl status disco.service"
+            fi
+        else
+            print_warning "Failed to $ACTION disco service. Check logs with: journalctl -u disco.service"
+            print_warning "You can also check status with: systemctl status disco.service"
+        fi
 
     else
-        print_message "Only systemd is supported. Cannot install."
+        print_warning "systemd not found. Service will need to be started manually."
     fi
+}
+
+# Function to setup launchd service (macOS)
+setup_launchd_service() {
+    print_message "Setting up launchd service for macOS..."
+    
+    local plist_file="/Library/LaunchDaemons/com.disco.discod.plist"
+    
+    # Generate service ID
+    SERVICE_ID=$(route get 1.1.1.1 | awk '/interface:/ {print $2}' | xargs -I {} ipconfig getifaddr {} | \
+        { IFS='.' read a b c d; echo $((a * 256**3 + b * 256**2 + c * 256 + d)); })
+
+    cat > "$plist_file" << EOF
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.disco.discod</string>
+    
+    <key>ProgramArguments</key>
+    <array>
+        <string>/usr/local/bin/discod</string>
+        <string>--id</string>
+        <string>$SERVICE_ID</string>
+        <string>--addr</string>
+        <string>0.0.0.0:$DISCO_PORT</string>
+        <string>--ca-cert</string>
+        <string>$CERT_DIR/ca.crt</string>
+        <string>--server-cert</string>
+        <string>$CERT_DIR/server.crt</string>
+        <string>--server-key</string>
+        <string>$CERT_DIR/server.key</string>
+        <string>--client-cert</string>
+        <string>$CERT_DIR/client.crt</string>
+        <string>--client-key</string>
+        <string>$CERT_DIR/client.key</string>
+        <string>--data-dir</string>
+        <string>$DATA_DIR</string>
+    </array>
+    
+    <key>UserName</key>
+    <string>$DISCO_USER</string>
+    <key>GroupName</key>
+    <string>$DISCO_GROUP</string>
+    
+    <key>RunAtLoad</key>
+    <true/>
+    
+    <key>KeepAlive</key>
+    <true/>
+    
+    <key>StandardOutPath</key>
+    <string>$LOG_DIR/disco.log</string>
+    <key>StandardErrorPath</key>
+    <string>$LOG_DIR/disco-error.log</string>
+</dict>
+</plist>
+EOF
+
+    # Set proper permissions
+    chown root:wheel "$plist_file"
+    chmod 644 "$plist_file"
+    
+    # Load the service
+    launchctl load "$plist_file"
+    
+    print_message "Disco service has been installed and started via launchd."
 }
 
 # Main script execution
 main() {
-    print_message "Starting Disco installation (version ${DISCO_VERSION})..."
+    print_message "Starting secure Disco installation (version ${DISCO_VERSION})..."
 
     # Check for root privileges
     check_root
@@ -205,16 +442,40 @@ main() {
     # Detect OS and architecture
     detect_system
 
+    # Create user and directories
+    create_user_and_directories
+
+    # Install certificates
+    install_certificates
+
     # Download and install the binary
     download_and_install
 
-    # Setup init script for Linux
+    # Create configuration file
+    create_config
+
+    # Setup init script based on OS
     if [ "$OS" = "linux" ]; then
         setup_systemd_service
+    elif [ "$OS" = "macos" ]; then
+        setup_launchd_service
     fi
 
     print_message "Disco v${DISCO_VERSION} has been successfully installed!"
-    print_message "You can run 'disco' from the command line."
+    print_message ""
+    print_message "Configuration:"
+    print_message "  - User: $DISCO_USER"
+    print_message "  - Certificates: $CERT_DIR"
+    print_message "  - Data directory: $DATA_DIR"
+    print_message "  - Log directory: $LOG_DIR"
+    print_message "  - Configuration: $CONFIG_DIR/disco.conf"
+    print_message ""
+    print_message "You can:"
+    print_message "  - Check service status: systemctl status disco.service"
+    print_message "  - View logs: journalctl -u disco.service -f"
+    print_message "  - Run disco CLI: disco"
+    print_message ""
+    print_message "The service will automatically start on boot."
 }
 
 # Run the main function

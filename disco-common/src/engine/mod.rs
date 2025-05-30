@@ -77,6 +77,7 @@ pub enum EngineError {
   SendCallback(mpsc::error::SendError<Command>),
   ReceiveCallback(oneshot::error::RecvError),
   Script(String),
+  NoModuleLoaded,
 }
 
 impl std::fmt::Display for EngineError {
@@ -85,6 +86,7 @@ impl std::fmt::Display for EngineError {
       EngineError::SendCallback(e) => write!(f, "Send error: {}", e),
       EngineError::ReceiveCallback(e) => write!(f, "Receive error: {}", e),
       EngineError::Script(e) => write!(f, "Script error: {}", e),
+      EngineError::NoModuleLoaded => write!(f, "No module has been loaded"),
     }
   }
 }
@@ -111,6 +113,7 @@ impl std::error::Error for EngineError {}
 
 pub enum Command {
   Process(String, Vec<JsValue>, oneshot::Sender<JsValue>),
+  LoadModule(String, oneshot::Sender<Result<(), String>>),
   Terminate,
 }
 
@@ -120,11 +123,15 @@ pub struct Engine {
 }
 
 impl Engine {
-  pub fn new(filename: &str) -> Result<Self, EngineError> {
+  pub fn new(filename: Option<&str>) -> Result<Self, EngineError> {
     let (command_tx, mut command_rx) = mpsc::channel::<Command>(10);
 
-    // Load the script file
-    let (_script_path, script_contents) = Self::load_script(filename)?;
+    // Optionally load the script file if provided
+    let initial_script = if let Some(filename) = filename {
+      Some(Self::load_script(filename)?.1)
+    } else {
+      None
+    };
 
     let thread_handle = std::thread::spawn(move || {
       // Create a second runtime in this separate OS thread
@@ -141,11 +148,8 @@ impl Engine {
         .build()
         .unwrap();
 
-      // Parse and load the module
-      let source = Source::from_bytes(&script_contents);
-      let module = Module::parse(source, None, context).expect("Could not parse script module");
+      // Set up the context with globals and console
       let console = Console::init(context);
-
       context
         .register_global_property(Console::NAME, console, Attribute::all())
         .expect("the console builtin shouldn't exist");
@@ -171,55 +175,85 @@ impl Engine {
         .expect("the ask function shouldn't exist");
 
       local_runtime.block_on(async {
-        let promise_result = module.load_link_evaluate(context);
+        let mut current_module: Option<Module> = None;
 
-        context
-          .run_jobs_async()
-          .await
-          .expect("Import module job failed");
-
-        match promise_result.state() {
-          PromiseState::Fulfilled(_value) => {
-            // info!(
-            //   "Import: Promise fulfilled with value: {}",
-            //   value.display()
-            // );
-          }
-          PromiseState::Rejected(reason) => {
-            info!("Import: Promise rejected with reason: {}", reason.display());
-          }
-          PromiseState::Pending => {
-            info!("Import: Promise is still pending");
+        // Load initial module if provided
+        if let Some(script_contents) = initial_script {
+          match Self::load_module_from_contents(&script_contents, context).await {
+            Ok(module) => {
+              current_module = Some(module);
+            }
+            Err(e) => {
+              warn!("Failed to load initial module: {}", e);
+            }
           }
         }
-
-        let namespace = module.namespace(context);
 
         // Can also pass a `Some(realm)` if you need to execute the module in another realm.
         while let Some(command) = command_rx.recv().await {
           match command {
+            Command::LoadModule(script_contents, response_tx) => {
+              info!("Loading new module");
+
+              match Self::load_module_from_contents(&script_contents, context).await {
+                Ok(module) => {
+                  current_module = Some(module);
+                  let _ = response_tx.send(Ok(()));
+                }
+                Err(e) => {
+                  let _ = response_tx.send(Err(e));
+                }
+              }
+            }
             Command::Process(data, input, response_tx) => {
               info!("Processing command: {:?}", data);
 
-              let func = namespace
-                .get(JsString::from(data), context)
-                .expect("Could not get command function")
-                .as_callable()
-                .cloned()
-                .ok_or_else(|| {
-                  JsNativeError::typ().with_message("command export wasn't a function")
-                })
-                .expect("Could not convert to callable");
+              let module = match &current_module {
+                Some(module) => module,
+                None => {
+                  let _ = response_tx.send(JsValue::undefined());
+                  continue;
+                }
+              };
 
-              let result = func
-                .call(&JsValue::undefined(), &input, context)
-                .and_then(|result| {
+              let namespace = module.namespace(context);
+
+              let func = match namespace.get(JsString::from(data.clone()), context) {
+                Ok(value) => match value.as_callable().cloned() {
+                  Some(func) => func,
+                  None => {
+                    warn!("Command '{}' is not a callable function", &data);
+                    let _ = response_tx.send(JsValue::undefined());
+                    continue;
+                  }
+                },
+                Err(e) => {
+                  warn!("Could not get command function '{}': {}", &data, e);
+                  let _ = response_tx.send(JsValue::undefined());
+                  continue;
+                }
+              };
+
+              let result = match func.call(&JsValue::undefined(), &input, context) {
+                Ok(result) => {
                   info!("Pending promise: {:?}", result);
-                  Ok(result)
-                })
-                .expect("Could not call command function");
+                  result
+                }
+                Err(e) => {
+                  warn!("Could not call command function: {}", e);
+                  let _ = response_tx.send(JsValue::undefined());
+                  continue;
+                }
+              };
 
-              let prom = result.as_promise().expect("Error with JsPromise");
+              let prom = match result.as_promise() {
+                Some(prom) => prom,
+                None => {
+                  // Not a promise, send the result directly
+                  let _ = response_tx.send(result);
+                  continue;
+                }
+              };
 
               let command_future = prom.into_js_future(context);
 
@@ -228,9 +262,12 @@ impl Engine {
                 info!("command_future done awaiting, sending response...");
                 match result {
                   Ok(value) => {
-                    response_tx.send(value).expect("Failed to send response");
+                    let _ = response_tx.send(value);
                   }
-                  Err(err) => info!("Promise rejected with: {}", err),
+                  Err(err) => {
+                    info!("Promise rejected with: {}", err);
+                    let _ = response_tx.send(JsValue::undefined());
+                  }
                 }
               });
 
@@ -239,16 +276,18 @@ impl Engine {
                 // context_ref could be freed once the command_rx loop exits.
                 //
                 // In order to make this "safe" we need to ensure that the
-                // task spawned here complete before the command loop is terminated
-                // (as shown) or cancel the tasks upon termination.
+                // task spawned here completes before the command loop is terminated
+                // or cancel the tasks upon termination. In our case the tasks are
+                // automatically canceled when the runtime is dropped.
+                //
+                // It is essential that mutable RefCell<&Context> borrows are not
+                // held across await points in native async code that runs within
+                // the spawned tasks.
                 mem::transmute::<&mut Context, &'static mut Context>(context)
               };
 
               let _job_handle = local_runtime.spawn_local(async move {
-                unsafe_context
-                  .run_jobs_async()
-                  .await
-                  .expect("Failed to run jobs");
+                let _ = unsafe_context.run_jobs_async().await;
               });
             }
             Command::Terminate => {
@@ -263,6 +302,29 @@ impl Engine {
       thread_handle,
       command_tx,
     })
+  }
+
+  pub async fn load_module(&self, script_contents: &str) -> Result<(), EngineError> {
+    let (response_tx, response_rx) = oneshot::channel();
+
+    self
+      .command_tx
+      .send(Command::LoadModule(
+        script_contents.to_string(),
+        response_tx,
+      ))
+      .await
+      .map_err(EngineError::SendCallback)?;
+
+    response_rx
+      .await
+      .map_err(EngineError::ReceiveCallback)?
+      .map_err(EngineError::Script)
+  }
+
+  pub async fn load_module_from_file(&self, filename: &str) -> Result<(), EngineError> {
+    let (_, script_contents) = Self::load_script(filename)?;
+    self.load_module(&script_contents).await
   }
 
   pub async fn callback(&self, data: &str, input: &[JsValue]) -> Result<JsValue, EngineError> {
@@ -285,8 +347,44 @@ impl Engine {
   }
 
   pub async fn terminate(self) {
-    self.command_tx.send(Command::Terminate).await.unwrap();
-    self.thread_handle.join().unwrap();
+    let _ = self.command_tx.send(Command::Terminate).await;
+    let _ = self.thread_handle.join();
+  }
+
+  // Helper function to load and parse a module from script contents
+  async fn load_module_from_contents(
+    script_contents: &str,
+    context: &mut Context,
+  ) -> Result<Module, String> {
+    // Parse and load the module
+    let source = Source::from_bytes(script_contents);
+    let module = Module::parse(source, None, context)
+      .map_err(|e| format!("Could not parse script module: {}", e))?;
+
+    let promise_result = module.load_link_evaluate(context);
+
+    context
+      .run_jobs_async()
+      .await
+      .map_err(|e| format!("Import module job failed: {}", e))?;
+
+    match promise_result.state() {
+      PromiseState::Fulfilled(_value) => {
+        info!("Module loaded successfully");
+      }
+      PromiseState::Rejected(reason) => {
+        let error_msg = format!("Module loading rejected: {}", reason.display());
+        warn!("{}", error_msg);
+        return Err(error_msg);
+      }
+      PromiseState::Pending => {
+        let error_msg = "Module loading is still pending".to_string();
+        warn!("{}", error_msg);
+        return Err(error_msg);
+      }
+    }
+
+    Ok(module)
   }
 
   // Load the script file

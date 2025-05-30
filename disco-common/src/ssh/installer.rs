@@ -1,12 +1,13 @@
 use super::Session;
 use crate::builder::{Host, KeyPair};
-use anyhow::{bail, Result};
+use anyhow::{Result, bail};
 use std::{
   env,
   fs::{self},
   path::PathBuf,
   process::Stdio,
-  sync::{Arc, Mutex},
+  rc::Rc,
+  sync::Mutex,
   time::{SystemTime, UNIX_EPOCH},
 };
 use tokio::{fs::File as TokioFile, io::BufReader, process::Command};
@@ -21,14 +22,14 @@ pub struct Installer {
 }
 
 impl Installer {
-  pub fn new<U>(key_pair: KeyPair, username: U, certificate: Option<PathBuf>) -> Arc<Self>
+  pub fn new<U>(key_pair: KeyPair, username: U, certificate: Option<PathBuf>) -> Rc<Self>
   where
     U: Into<String>,
   {
     let username = username.into();
     let remote_directory = format!("/home/{}/disco", username);
 
-    Arc::new(Self {
+    Rc::new(Self {
       key_pair,
       username,
       remote_directory,
@@ -114,7 +115,7 @@ impl Installer {
 
   async fn run_installer(&self, session: &Session) -> Result<()> {
     let exit_status = session
-      .run_command(format!("sh {}/install", self.remote_directory))
+      .run_command(format!("bash {}/install", self.remote_directory))
       .await
       .map_err(|e| anyhow::anyhow!("Failed to run installer command: {}", e))?;
 

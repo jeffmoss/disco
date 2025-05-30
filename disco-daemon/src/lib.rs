@@ -1,3 +1,4 @@
+pub mod config;
 pub mod controller;
 pub mod grpc;
 pub mod network;

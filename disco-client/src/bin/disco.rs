@@ -48,7 +48,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
   let options = Opt::parse();
 
-  let engine = Engine::new("client.js")?;
+  let engine = Engine::new(Some("client.js"))?;
 
   match options.command {
     SubCommand::Get { addr, key } => {

@@ -23,6 +23,7 @@ config             = { workspace = true }
 futures            = { workspace = true }
 openraft           = { workspace = true }
 prost              = { workspace = true }
+rustls             = { workspace = true }
 serde              = { workspace = true }
 tokio              = { workspace = true }
 tonic              = { workspace = true }

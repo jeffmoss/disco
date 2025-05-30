@@ -234,7 +234,7 @@ impl Cluster {
       let host_ref = host.clone();
       let installer_ref = installer.clone();
 
-      set.spawn(async move {
+      set.spawn_local(async move {
         match installer_ref.install_to_host(&host_ref).await {
           Ok(_) => {
             info!("SSH installation successful for host: {:?}", host_ref);

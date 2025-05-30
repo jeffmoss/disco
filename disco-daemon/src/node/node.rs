@@ -1,12 +1,15 @@
 use disco_common::engine::*;
 use std::sync::Arc;
+use tokio::fs;
+use tokio::try_join;
 use tracing::info;
 
 use openraft::{Config, ServerState, metrics::RaftServerMetrics};
 use tokio::sync::{Mutex, watch::Receiver};
-use tonic::transport::Server;
+use tonic::transport::{Certificate, Identity, Server, ServerTlsConfig};
 
 use crate::TypeConfig;
+use crate::config::Opt;
 use crate::controller::Controller;
 use crate::grpc::app_service::AppServiceImpl;
 use crate::grpc::raft_service::RaftServiceImpl;
@@ -25,13 +28,16 @@ pub struct Node {
   inner: Arc<NodeInner>, // Removed RwLock
 }
 
-pub struct NodeInner {
-  node_id: NodeId,
-  addr: String,
+struct NodeInner {
+  // Store the entire config
+  config: Opt,
+
+  // Keep the fields you were using directly
   raft: Raft,
   state_machine_store: Arc<StateMachineStore>,
 
   // cluster-wide settings that never change
+  #[allow(dead_code)]
   settings: Settings,
 
   // each node runs a disco Engine for scripted customizations
@@ -39,17 +45,35 @@ pub struct NodeInner {
 
   // controller is started and stopped based on raft leader status
   controller: Arc<Mutex<Option<Controller>>>,
+
+  // TLS certificates
+  server_cert: Vec<u8>,
+  server_key: Vec<u8>,
+  ca_cert: Vec<u8>,
+  client_cert: Vec<u8>,
+  client_key: Vec<u8>,
 }
 
 impl Node {
-  pub async fn new(node_id: NodeId, addr: String, settings: Settings) -> Node {
+  const START_FILE: &str = "cluster.js";
+
+  pub async fn new(config: Opt, settings: Settings) -> Result<Node, Box<dyn std::error::Error>> {
+    // Load all TLS certificates in parallel at startup
+    let (server_cert, server_key, ca_cert, client_cert, client_key) = try_join!(
+      fs::read(&config.server_cert),
+      fs::read(&config.server_key),
+      fs::read(&config.ca_cert),
+      fs::read(&config.client_cert),
+      fs::read(&config.client_key)
+    )?;
+
     let log_store = LogStore::default();
     let state_machine_store = Arc::new(StateMachineStore::default());
 
-    // Create the network layer
-    let network = Network {};
+    // Create the network layer with client certificates
+    let network = Network::new(&ca_cert, &client_cert, &client_key)?;
 
-    let config: Config = Config {
+    let raft_config: Config = Config {
       cluster_name: settings.cluster_name.clone(),
       election_timeout_min: settings.election_timeout_min,
       election_timeout_max: settings.election_timeout_max,
@@ -57,55 +81,67 @@ impl Node {
       install_snapshot_timeout: settings.install_snapshot_timeout,
       ..Default::default()
     }
-    .validate()
-    .unwrap(); // Handle the Result by unwrapping or use proper error handling
+    .validate()?; // Proper error handling instead of unwrap
 
     // Create a local raft instance
     let raft = Raft::new(
-      node_id,
-      Arc::new(config),
+      config.id.clone(),
+      Arc::new(raft_config),
       network,
       log_store,
       state_machine_store.clone(),
     )
-    .await
-    .unwrap();
+    .await?; // Proper error handling
 
-    let engine = Engine::new("cluster.js").unwrap();
+    let engine = Engine::new(Some(Self::START_FILE))?;
 
-    let _cluster = engine.callback("init", &[]).await.unwrap();
+    let _cluster = engine.callback("init", &[]).await?;
 
     let node_inner = NodeInner {
-      node_id,
-      addr,
+      config,
       raft,
       state_machine_store,
       settings,
       engine,
       controller: Arc::new(Mutex::new(None)),
+
+      // Store the loaded certificates
+      server_cert,
+      server_key,
+      ca_cert,
+      client_cert,
+      client_key,
     };
 
-    Node {
+    Ok(Node {
       inner: Arc::new(node_inner),
-    }
+    })
   }
 
-  pub async fn run(self) -> Result<(), Box<dyn std::error::Error>> {
-    let inner_arc = self.inner.clone();
-
-    // Spawn the leader election monitor
-    let metrics = inner_arc.raft.server_metrics();
-    let controller = inner_arc.controller.clone();
-
+  pub async fn run(&self) -> Result<(), Box<dyn std::error::Error>> {
+    // Spawn the leader election monitor - just clone what you need
     runtime::spawn(Self::monitor_leader_election(
-      metrics, controller, inner_arc,
+      self.inner.raft.server_metrics(),
+      self.inner.controller.clone(),
+      self.inner.clone(),
     ));
 
-    // Now we can directly use the inner fields without any locking
     info!(
       "Node {} starting server at {}",
-      self.inner.node_id, self.inner.addr
+      self.inner.config.id, self.inner.config.addr
     );
+
+    rustls::crypto::aws_lc_rs::default_provider()
+      .install_default()
+      .expect("Failed to install crypto provider");
+
+    let server_identity = Identity::from_pem(&self.inner.server_cert, &self.inner.server_key);
+    let ca_certificate = Certificate::from_pem(&self.inner.ca_cert);
+
+    // Configure TLS
+    let tls_config = ServerTlsConfig::new()
+      .identity(server_identity)
+      .client_ca_root(ca_certificate);
 
     // Create the services
     let internal_service = RaftServiceImpl::new(self.inner.raft.clone());
@@ -114,15 +150,16 @@ impl Node {
       self.inner.state_machine_store.clone(),
     );
 
-    // Start and await the server
+    // Start and await the server with TLS
     Server::builder()
+      .tls_config(tls_config)?
       .add_service(protobuf::raft_service_server::RaftServiceServer::new(
         internal_service,
       ))
       .add_service(protobuf::app_service_server::AppServiceServer::new(
         api_service,
       ))
-      .serve(self.inner.addr.parse()?)
+      .serve(self.inner.config.addr.parse()?)
       .await?;
 
     Ok(())

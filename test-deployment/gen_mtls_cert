@@ -1,0 +1,94 @@
+#!/bin/bash
+
+# Check if domain argument is provided
+if [ $# -eq 0 ]; then
+    echo "Usage: $0 <domain>"
+    echo "Example: $0 heavyobjects.com"
+    exit 1
+fi
+
+DOMAIN=$1
+echo "Generating mTLS certificates for domain: $DOMAIN"
+
+# Create certificates directory
+mkdir -p certs
+cd certs
+
+# Generate CA private key
+openssl genrsa -out ca.key 4096
+
+# Generate CA certificate
+openssl req -new -x509 -key ca.key -sha256 -subj "/C=US/ST=CA/O=HeavyObjects/CN=HeavyObjects-CA" -days 3650 -out ca.crt
+
+# Generate server private key
+openssl genrsa -out server.key 4096
+
+# Create server certificate signing request
+openssl req -new -key server.key -out server.csr -config <(
+cat <<EOF
+[req]
+default_bits = 4096
+prompt = no
+distinguished_name = req_distinguished_name
+req_extensions = req_ext
+
+[req_distinguished_name]
+C=US
+ST=CA
+O=HeavyObjects
+CN=*.$DOMAIN
+
+[req_ext]
+subjectAltName = @alt_names
+
+[alt_names]
+DNS.1 = *.$DOMAIN
+DNS.2 = $DOMAIN
+DNS.3 = localhost
+IP.1 = 127.0.0.1
+IP.2 = ::1
+EOF
+)
+
+# Generate server certificate signed by CA
+openssl x509 -req -in server.csr -CA ca.crt -CAkey ca.key -CAcreateserial -out server.crt -days 365 -sha256 -extensions req_ext -extfile <(
+cat <<EOF
+[req_ext]
+subjectAltName = @alt_names
+
+[alt_names]
+DNS.1 = *.$DOMAIN
+DNS.2 = $DOMAIN
+DNS.3 = localhost
+IP.1 = 127.0.0.1
+IP.2 = ::1
+IP.1 = 127.0.0.1
+IP.2 = ::1
+EOF
+)
+
+# Generate client private key
+openssl genrsa -out client.key 4096
+
+# Generate client certificate signing request
+openssl req -new -key client.key -subj "/C=US/ST=CA/O=MyOrg/CN=client" -out client.csr
+
+# Generate client certificate signed by CA
+openssl x509 -req -in client.csr -CA ca.crt -CAkey ca.key -CAcreateserial -out client.crt -days 365 -sha256
+
+# Clean up CSR files
+rm server.csr client.csr
+
+echo "Certificates generated successfully for domain: $DOMAIN"
+echo "Files created:"
+echo "  ca.crt - Certificate Authority"
+echo "  ca.key - CA private key"
+echo "  server.crt - Server certificate (valid for *.$DOMAIN and $DOMAIN)"
+echo "  server.key - Server private key"
+echo "  client.crt - Client certificate"
+echo "  client.key - Client private key"
+echo ""
+echo "Server certificate is valid for:"
+echo "  - *.$DOMAIN (wildcard - covers all subdomains)"
+echo "  - $DOMAIN (root domain)"
+echo "  - localhost (for local development)"

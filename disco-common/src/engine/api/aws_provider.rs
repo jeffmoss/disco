@@ -16,6 +16,14 @@ struct Parameters {
   region: String,
 }
 
+fn storage(
+  _this: &JsValue,
+  args: &[JsValue],
+  _context: &RefCell<&mut Context>,
+) -> impl Future<Output = JsResult<JsValue>> {
+  async move { Ok(JsValue::from(false)) }
+}
+
 fn init(
   _this: &JsValue,
   args: &[JsValue],
@@ -64,6 +72,12 @@ impl Class for AwsProvider {
       Some(function_get),
       None,
       Attribute::CONFIGURABLE | Attribute::NON_ENUMERABLE,
+    );
+
+    class.method(
+      JsString::from("storage"),
+      1,
+      NativeFunction::from_async_fn(storage),
     );
 
     class.static_method(

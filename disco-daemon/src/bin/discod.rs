@@ -1,20 +1,9 @@
 #![allow(clippy::uninlined_format_args)]
 
 use clap::Parser;
-
+use disco_daemon::config::Opt;
 use disco_daemon::node::Node;
 use disco_daemon::settings::Settings;
-
-#[derive(Parser, Clone, Debug)]
-#[clap(author, version, about, long_about = None)]
-pub struct Opt {
-  #[clap(long)]
-  pub id: u64,
-
-  #[clap(long)]
-  /// Network address to bind the server to (e.g., "127.0.0.1:50051")
-  pub addr: String,
-}
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -30,8 +19,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
   let settings = Settings::new()?;
 
-  let service = Node::new(options.id, options.addr, settings).await;
-  service.run().await?;
+  let node = Node::new(options, settings).await?;
+
+  node.run().await?;
 
   Ok(())
 }
