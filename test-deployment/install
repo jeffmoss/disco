@@ -94,10 +94,10 @@ create_user_and_directories() {
     chmod 750 "$CERT_DIR"
 
     chown "$DISCO_USER":"$DISCO_GROUP" "$DATA_DIR"
-    chmod 750 "$DATA_DIR"
+    chmod 770 "$DATA_DIR"
 
-    chown "$DISCO_USER":"$DISCO_GROUP" "$LOG_DIR"
-    chmod 750 "$LOG_DIR"
+    chown syslog:"$DISCO_GROUP" "$LOG_DIR"
+    chmod 770 "$LOG_DIR"
 
     print_message "Created directories with secure permissions"
 }
@@ -255,12 +255,19 @@ DISCO_DATA_DIR=$DATA_DIR
 
 # Log Directory
 DISCO_LOG_DIR=$LOG_DIR
+DISCO_LOG=warn
+NO_COLOR=true
 EOF
 
     chown root:"$DISCO_GROUP" "$config_file"
     chmod 640 "$config_file"
     
     print_message "Configuration file created at: $config_file"
+}
+
+# Function to create configuration file
+install_cluster_scripts() {
+    find "$INSTALLER_DIR" -type f -name "*.js" -exec cp {} "$DATA_DIR/" \;
 }
 
 # Function to setup systemd service (Linux)
@@ -280,6 +287,7 @@ Wants=network.target
 Type=simple
 User=$DISCO_USER
 Group=$DISCO_GROUP
+WorkingDirectory=$DATA_DIR
 
 # Security settings
 NoNewPrivileges=true
@@ -305,6 +313,9 @@ ExecStart=/usr/local/bin/discod \\
     --client-key \${DISCO_CLIENT_KEY} \\
     --data-dir \${DISCO_DATA_DIR}
 
+# Reload user scripts by sending HUP signal
+ExecReload=/bin/kill -HUP $MAINPID
+
 # Restart policy
 Restart=on-failure
 RestartSec=5
@@ -320,7 +331,33 @@ SyslogIdentifier=disco
 WantedBy=multi-user.target
 EOF
 
-        # Reload systemd, enable and start the service
+        # Add rsyslog configuration
+        cat > /etc/rsyslog.d/30-disco.conf << EOF
+# Disco service logging
+if \$programname == 'disco' then {
+    action(type="omfile" file="$LOG_DIR/disco.log")
+    stop
+}
+EOF
+
+        # Add log rotation configuration
+        cat > /etc/logrotate.d/disco << EOF
+$LOG_DIR/disco.log {
+    daily
+    rotate 30
+    compress
+    delaycompress
+    missingok
+    notifempty
+    create 0644 $DISCO_USER $DISCO_GROUP
+    postrotate
+        systemctl reload-or-restart disco.service
+    endscript
+}
+EOF
+
+        # Reload systemd, logroutate, and enable and start the service
+        systemctl restart rsyslog
         systemctl daemon-reload
         systemctl enable disco.service
 

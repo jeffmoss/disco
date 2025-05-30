@@ -10,6 +10,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
   // Initialize tracing first, before any logging happens
   tracing_subscriber::fmt()
     .with_max_level(tracing::Level::INFO)
+    .with_env_filter(tracing_subscriber::EnvFilter::from_env("DISCO_LOG"))
     .with_file(true)
     .with_line_number(true)
     .init();
